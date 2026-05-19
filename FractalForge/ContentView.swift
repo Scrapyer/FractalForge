@@ -138,38 +138,20 @@ private struct AlgorithmSidebar: View {
                 .padding(.top, 12)
 
             ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(FractalKind.allCases) { kind in
-                        Button {
-                            viewport.kind = kind
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: kind.systemImage)
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 10) {
+                    AlgorithmSection(
+                        title: "2D",
+                        kinds: FractalKind.twoDimensionalCases,
+                        viewport: viewport,
+                        selectionBackground: selectionBackground
+                    )
 
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(kind.title)
-                                        .font(.callout)
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-
-                                    Text(kind.detail)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                }
-
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .background(selectionBackground(for: kind), in: RoundedRectangle(cornerRadius: 6))
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 8)
-                    }
+                    AlgorithmSection(
+                        title: "3D",
+                        kinds: FractalKind.threeDimensionalCases,
+                        viewport: viewport,
+                        selectionBackground: selectionBackground
+                    )
                 }
             }
 
@@ -180,6 +162,55 @@ private struct AlgorithmSidebar: View {
 
     private func selectionBackground(for kind: FractalKind) -> Color {
         viewport.kind == kind ? Color.accentColor.opacity(0.22) : Color.clear
+    }
+}
+
+private struct AlgorithmSection: View {
+    let title: String
+    let kinds: [FractalKind]
+    @Bindable var viewport: FractalViewport
+    let selectionBackground: (FractalKind) -> Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.top, 2)
+
+            ForEach(kinds) { kind in
+                Button {
+                    viewport.kind = kind
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: kind.systemImage)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 18)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(kind.title)
+                                .font(.callout)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+
+                            Text(kind.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(selectionBackground(kind), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 8)
+            }
+        }
     }
 }
 
@@ -264,7 +295,9 @@ private struct ParameterInspector: View {
                         LabeledContent("当前公式", value: viewport.kind.title)
                     }
 
-                    if viewport.kind.rawValue >= FractalKind.monster.rawValue {
+                    if let sourceURL = viewport.kind.sourceURL {
+                        LabeledContent("来源 URL", value: sourceURL)
+                    } else if viewport.kind.rawValue >= FractalKind.oceanic.rawValue {
                         LabeledContent("来源页", value: "Shadertoy Fractal 第 2 页")
                     }
                 }

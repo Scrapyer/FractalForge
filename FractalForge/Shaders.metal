@@ -238,13 +238,17 @@ inline float mandelbox2D(float2 c, int maxIter, float bailout) {
     float n = 0.0f;
     float len2 = dot(z, z);
     bool escaped = false;
+    float trap = 12.0f;
+    float foldGlow = 0.0f;
 
     for (int i = 0; i < 4096; i++) {
         if (i >= maxIter) {
             break;
         }
 
+        const float2 beforeFold = z;
         z = clamp(z, float2(-1.0f), float2(1.0f)) * 2.0f - z;
+        foldGlow += exp(-8.0f * length(z - beforeFold));
         len2 = dot(z, z);
         if (len2 < 0.25f) {
             z *= 4.0f;
@@ -253,6 +257,7 @@ inline float mandelbox2D(float2 c, int maxIter, float bailout) {
         }
         z = z * 1.8f + c;
         len2 = dot(z, z);
+        trap = min(trap, min(length(z), fabs(abs(z.x) - abs(z.y)) + 0.12f * length(z)));
         if (len2 > bailout * bailout) {
             escaped = true;
             break;
@@ -261,7 +266,9 @@ inline float mandelbox2D(float2 c, int maxIter, float bailout) {
     }
 
     if (!escaped) {
-        return 0.0f;
+        const float trapGlow = exp(-3.6f * trap);
+        const float foldTone = clamp(foldGlow / max(n, 1.0f), 0.0f, 1.0f);
+        return 6.0f + 96.0f * trapGlow + 42.0f * foldTone + 10.0f * sin(18.0f * trap);
     }
 
     return n - log2(log2(max(len2, 1.000001f))) + 4.0f;
@@ -520,18 +527,32 @@ inline float universesTone(float2 p, float time) {
 }
 
 inline float explorerTone(float2 p, float time) {
-    float2 z = p;
-    float trap = 8.0f;
+    float2 z = p * 0.78f;
+    float trap = 6.0f;
     float scale = 1.0f;
+    float edge = 0.0f;
+    float depth = 0.0f;
 
-    for (int i = 0; i < 30; i++) {
-        z = abs(fract(z + 0.5f) - 0.5f);
-        z = float2(z.x - z.y, z.x + z.y) * 1.34f + 0.05f * sin(time * 0.2f);
-        scale *= 1.34f;
-        trap = min(trap, length(z - 0.22f) / scale);
+    for (int i = 0; i < 34; i++) {
+        z = abs(z);
+        if (z.x < z.y) {
+            z = z.yx;
+        }
+
+        z = float2(z.x - z.y, z.x + z.y) * 1.31f - float2(0.58f, 0.34f);
+        z += 0.045f * sin(float(i) * 1.7f + time * 0.18f);
+        scale *= 1.31f;
+
+        const float r = length(z);
+        const float lane = min(abs(z.x), abs(z.y));
+        trap = min(trap, abs(r - 0.62f) / scale);
+        edge += exp(-18.0f * lane) / scale;
+        depth += exp(-4.0f * abs(r - 0.95f)) / scale;
     }
 
-    return 12.0f + 92.0f * exp(-36.0f * trap);
+    const float focus = exp(-70.0f * trap);
+    const float dof = smoothstep(0.08f, 0.55f, depth);
+    return 8.0f + 72.0f * focus + 54.0f * edge + 24.0f * dof;
 }
 
 inline float monteCarloTone(float2 p, float2 uv, float time) {
@@ -574,6 +595,30 @@ inline float fluxCoreTone(float2 p, float time) {
     return 12.0f + 88.0f * (core + 0.55f * rings + 0.5f * spokes);
 }
 
+inline float lightAndMotionTone(float2 p, float time) {
+    const float r = length(p) + 0.02f;
+    const float a = atan2(p.y, p.x);
+    const float beams = pow(1.0f - fabs(sin(9.0f * a + 2.0f * sin(3.0f * r - time))), 8.0f);
+    const float rings = pow(1.0f - fabs(sin(26.0f * r - 1.6f * time)), 3.0f);
+    const float pulse = exp(-2.4f * r) * (0.65f + 0.35f * sin(time * 1.2f));
+    return 8.0f + 112.0f * (0.45f * beams + 0.35f * rings + pulse);
+}
+
+inline float shaderF3BGzWTone(float2 p, float time) {
+    float2 z = p;
+    float trap = 6.0f;
+    float glow = 0.0f;
+
+    for (int i = 0; i < 24; i++) {
+        z = abs(z) / max(dot(z, z), 0.18f) - float2(0.72f + 0.08f * sin(time * 0.23f), 0.42f);
+        const float d = abs(length(z) - 0.72f);
+        trap = min(trap, d);
+        glow += exp(-8.0f * d);
+    }
+
+    return 10.0f + 36.0f * glow / 24.0f + 95.0f * exp(-18.0f * trap);
+}
+
 inline float apollonianTone(float2 p) {
     float2 z = p * 1.05f;
     float scale = 1.0f;
@@ -614,6 +659,10 @@ inline float3 renderShadertoyResult(float2 p, float2 uv, constant FrameUniforms 
         tone = valueNoiseTone(p, uniforms.time);
     } else if (uniforms.fractalType == 16) {
         tone = fluxCoreTone(p, uniforms.time);
+    } else if (uniforms.fractalType == 21) {
+        tone = lightAndMotionTone(p, uniforms.time);
+    } else if (uniforms.fractalType == 23) {
+        tone = shaderF3BGzWTone(p, uniforms.time);
     } else {
         tone = apollonianTone(p);
     }
@@ -690,6 +739,242 @@ inline float mandelbulbAmbientOcclusion(float3 p, float3 normal, float power, in
     }
 
     return saturate(1.0f - 2.2f * occlusion);
+}
+
+inline float monsterDistance(float3 p) {
+    float3 z = p;
+    float scale = 1.0f;
+
+    for (int i = 0; i < 12; i++) {
+        z = abs(z);
+        if (z.x < z.y) {
+            z.xy = z.yx;
+        }
+        if (z.x < z.z) {
+            z.xz = z.zx;
+        }
+        if (z.y < z.z) {
+            z.yz = z.zy;
+        }
+
+        const float r2 = dot(z, z);
+        if (r2 < 0.38f) {
+            const float k = 0.38f / max(r2, 0.0001f);
+            z *= k;
+            scale *= k;
+        }
+
+        z = z * 1.48f - float3(0.92f, 0.42f, 0.62f);
+        scale *= 1.48f;
+    }
+
+    return (length(z) - 0.78f) / max(scale, 1e-4f);
+}
+
+inline float remnantXDistance(float3 pos) {
+    const float baseScale = -2.8f;
+    const float minRad2 = 0.25f;
+    const float4 foldScale = float4(baseScale, baseScale, baseScale, abs(baseScale)) / minRad2;
+    const float absScaleMinusOne = abs(baseScale - 1.0f);
+    const float shrink = pow(abs(baseScale), -9.0f);
+    float4 p = float4(pos, 1.0f);
+    const float4 p0 = p;
+
+    for (int i = 0; i < 9; i++) {
+        p.xyz = clamp(p.xyz, float3(-1.0f), float3(1.0f)) * 2.0f - p.xyz;
+        const float r2 = dot(p.xyz, p.xyz);
+        p *= clamp(max(minRad2 / max(r2, 1e-6f), minRad2), 0.0f, 1.0f);
+        p = p * foldScale + p0;
+    }
+
+    return (length(p.xyz) - absScaleMinusOne) / max(p.w, 1e-4f) - shrink;
+}
+
+inline float syntopiaIFSDistance(float3 p) {
+    float3 z = p;
+    float scale = 1.0f;
+
+    for (int i = 0; i < 13; i++) {
+        z = abs(z);
+        if (z.x - z.y < 0.0f) {
+            z.xy = z.yx;
+        }
+        if (z.x - z.z < 0.0f) {
+            z.xz = z.zx;
+        }
+        if (z.y - z.z < 0.0f) {
+            z.yz = z.zy;
+        }
+
+        z = z * 1.58f - float3(0.86f, 0.52f, 0.32f);
+        scale *= 1.58f;
+    }
+
+    return (length(z) - 0.74f) / max(scale, 1e-4f);
+}
+
+inline float mengerFoldDistance(float3 p) {
+    float3 z = p;
+    float scale = 1.0f;
+    float d = max(max(abs(z.x), abs(z.y)), abs(z.z)) - 1.0f;
+
+    for (int i = 0; i < 6; i++) {
+        z = abs(z);
+        if (z.x < z.y) {
+            z.xy = z.yx;
+        }
+        if (z.x < z.z) {
+            z.xz = z.zx;
+        }
+        if (z.y < z.z) {
+            z.yz = z.zy;
+        }
+
+        z = z * 3.0f - float3(2.0f, 1.15f, 0.65f);
+        scale *= 3.0f;
+        const float crossBar = max(abs(z.y), abs(z.z)) - 0.34f;
+        d = max(d, -crossBar / scale);
+    }
+
+    return d;
+}
+
+inline float mandelboxSweeperDistance(float3 p) {
+    const float sweep = 0.32f * sin(p.z * 1.7f);
+    p.xy += float2(sweep, -sweep * 0.55f);
+    return remnantXDistance(p * 0.92f) * 1.08f;
+}
+
+inline float cosmicPearlDistance(float3 p) {
+    float3 q = p;
+    float scale = 1.0f;
+    float d = 5.0f;
+
+    for (int i = 0; i < 8; i++) {
+        q = abs(q);
+        if (q.x < q.y) {
+            q.xy = q.yx;
+        }
+        if (q.x < q.z) {
+            q.xz = q.zx;
+        }
+        if (q.y < q.z) {
+            q.yz = q.zy;
+        }
+
+        q = q * 2.08f - float3(1.18f, 0.92f, 0.72f);
+        scale *= 2.08f;
+
+        const float pearl = length(q + 0.18f * sin(float3(1.7f, 2.1f, 2.6f) * float(i + 1))) - 0.34f;
+        const float strand = max(length(q.xy) - 0.17f, abs(q.z) - 0.72f);
+        d = min(d, min(pearl, strand) / scale);
+    }
+
+    return d - 0.004f;
+}
+
+inline float shadertoy3DDistance(float3 p, int fractalType) {
+    if (fractalType == 8) {
+        return remnantXDistance(p);
+    }
+    if (fractalType == 19) {
+        return syntopiaIFSDistance(p);
+    }
+    if (fractalType == 20) {
+        return mengerFoldDistance(p);
+    }
+    if (fractalType == 22) {
+        return mandelboxSweeperDistance(p);
+    }
+    if (fractalType == 24) {
+        return cosmicPearlDistance(p);
+    }
+    return monsterDistance(p);
+}
+
+inline float3 shadertoy3DNormal(float3 p, int fractalType, float epsilon) {
+    const float2 e = float2(max(epsilon, 0.00025f), 0.0f);
+    return normalize(float3(
+        shadertoy3DDistance(p + e.xyy, fractalType) - shadertoy3DDistance(p - e.xyy, fractalType),
+        shadertoy3DDistance(p + e.yxy, fractalType) - shadertoy3DDistance(p - e.yxy, fractalType),
+        shadertoy3DDistance(p + e.yyx, fractalType) - shadertoy3DDistance(p - e.yyx, fractalType)
+    ));
+}
+
+inline float shadertoy3DAmbientOcclusion(float3 p, float3 normal, int fractalType) {
+    float occlusion = 0.0f;
+    float weight = 1.0f;
+
+    for (int i = 1; i <= 5; i++) {
+        const float h = 0.055f * float(i);
+        const float d = shadertoy3DDistance(p + normal * h, fractalType);
+        occlusion += (h - d) * weight;
+        weight *= 0.55f;
+    }
+
+    return saturate(1.0f - 1.8f * occlusion);
+}
+
+inline float3 renderShadertoy3D(float2 uv, constant FrameUniforms &uniforms, int maxIter) {
+    const float scale = max(fabs(uniforms.scaleHi + uniforms.scaleLo), 0.08f);
+    const float3 target = float3(
+        uniforms.centerHi.x + uniforms.centerLo.x,
+        uniforms.centerHi.y + uniforms.centerLo.y,
+        0.0f
+    );
+    const float distanceBias = uniforms.fractalType == 8 || uniforms.fractalType == 22 ? 1.15f : 0.92f;
+    const float cameraDistance = clamp(uniforms.cameraDistance, 1.2f, 12.0f) * scale * distanceBias;
+    const float3 orbit = rotateY(rotateX(float3(0.0f, 0.0f, cameraDistance), uniforms.cameraPitch), uniforms.rotation + 0.08f * uniforms.time);
+    const float3 ro = target + orbit;
+    const float3 forward = normalize(target - ro);
+    const float3 right = normalize(cross(float3(0.0f, 1.0f, 0.0f), forward));
+    const float3 up = cross(forward, right);
+    const float3 rd = normalize(uv.x * right + uv.y * up + 1.45f * forward);
+
+    const int raySteps = clamp(uniforms.rayMarchSteps, 32, 160);
+    const float epsilon = clamp(uniforms.surfaceDetail * scale, 0.0001f, 0.018f);
+    const float maxDistance = max(7.5f * scale, 5.5f);
+    float t = 0.0f;
+    float steps = 0.0f;
+    bool hit = false;
+
+    for (int i = 0; i < 160; i++) {
+        if (i >= raySteps) {
+            break;
+        }
+
+        const float3 p = ro + rd * t;
+        const float d = shadertoy3DDistance(p, uniforms.fractalType);
+        if (d < epsilon) {
+            hit = true;
+            break;
+        }
+
+        t += clamp(d, 0.0008f * scale, 0.22f * scale);
+        steps += 1.0f;
+
+        if (t > maxDistance) {
+            break;
+        }
+    }
+
+    if (!hit) {
+        const float sky = pow(saturate(0.58f + 0.42f * rd.y), 1.6f);
+        return mix(uniforms.backgroundColor.rgb * 0.65f, saturate(uniforms.backgroundColor.rgb + float3(0.08f, 0.10f, 0.16f)), sky);
+    }
+
+    const float3 p = ro + rd * t;
+    const float3 normal = shadertoy3DNormal(p, uniforms.fractalType, epsilon * 2.0f);
+    const float3 lightDirection = normalize(uniforms.fractalType == 8 || uniforms.fractalType == 22 ? float3(0.36f, 0.12f, 0.31f) : float3(-0.55f, 0.74f, 0.40f));
+    const float diffuse = saturate(dot(normal, lightDirection));
+    const float rim = pow(saturate(1.0f - dot(normal, -rd)), 2.4f);
+    const float ao = shadertoy3DAmbientOcclusion(p, normal, uniforms.fractalType);
+    const float orbitTone = uniforms.fractalType == 8 || uniforms.fractalType == 22 ? 24.0f + steps * 0.8f + length(p) * 10.0f : 18.0f + steps * 1.05f + length(abs(p)) * 7.0f;
+    const float3 baseColor = paletteColor(orbitTone, uniforms.colorPalette);
+    const float3 shaded = baseColor * (0.34f + 1.18f * diffuse) * ao + rim * (uniforms.fractalType == 8 || uniforms.fractalType == 22 ? 0.32f : 0.48f);
+    const float fog = exp(-0.045f * t * t / max(scale, 0.2f));
+
+    return mix(uniforms.backgroundColor.rgb * 0.72f, shaded, fog);
 }
 
 inline float3 renderMandelbulb3D(float2 uv, constant FrameUniforms &uniforms, int maxIter) {
@@ -780,7 +1065,15 @@ fragment float4 mandelbrotFragment(
     const float scale = fabs(uniforms.scaleHi + uniforms.scaleLo);
     float3 color = float3(0.0f);
 
-    const int aa = (uniforms.fractalType == 6 && uniforms.antialiasingMode == 0)
+    const bool isRayMarched3D = uniforms.fractalType == 6
+        || uniforms.fractalType == 7
+        || uniforms.fractalType == 8
+        || uniforms.fractalType == 18
+        || uniforms.fractalType == 19
+        || uniforms.fractalType == 20
+        || uniforms.fractalType == 22
+        || uniforms.fractalType == 24;
+    const int aa = (isRayMarched3D && uniforms.antialiasingMode == 0)
         ? 1
         : antialiasingSamples(uniforms.antialiasingMode, maxIter);
     for (int y = 0; y < aa; y++) {
@@ -788,8 +1081,18 @@ fragment float4 mandelbrotFragment(
             const float2 subPixel = pixel + (float2(float(x), float(y)) + 0.5f) / float(aa);
             float2 uv = (2.0f * subPixel - resolution) / resolution.y;
 
-            if (uniforms.fractalType == 6) {
+            if (uniforms.fractalType == 6 || uniforms.fractalType == 18) {
                 color += renderMandelbulb3D(uv, uniforms, maxIter);
+                continue;
+            }
+
+            if (uniforms.fractalType == 7
+                || uniforms.fractalType == 8
+                || uniforms.fractalType == 19
+                || uniforms.fractalType == 20
+                || uniforms.fractalType == 22
+                || uniforms.fractalType == 24) {
+                color += renderShadertoy3D(uv, uniforms, maxIter);
                 continue;
             }
 

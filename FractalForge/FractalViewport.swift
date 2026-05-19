@@ -21,8 +21,46 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
     case valueNoise2D = 15
     case fluxCore = 16
     case apollonian = 17
+    case mandelbulbIQ = 18
+    case syntopiaIFS = 19
+    case fractalExplorer = 20
+    case lightAndMotion = 21
+    case mandelboxSweeper = 22
+    case shaderF3BGzW = 23
+    case cosmicPearl = 24
 
     var id: Self { self }
+
+    static let twoDimensionalCases: [FractalKind] = [
+        .mandelbrot,
+        .julia,
+        .burningShip,
+        .newton,
+        .multibrot,
+        .mandelbox,
+        .oceanic,
+        .simplicityGalaxy,
+        .galaxyOfUniverses,
+        .fractalExplorerDOF,
+        .basicMonteCarlo,
+        .mysteryMountains,
+        .valueNoise2D,
+        .fluxCore,
+        .apollonian,
+        .lightAndMotion,
+        .shaderF3BGzW
+    ]
+
+    static let threeDimensionalCases: [FractalKind] = [
+        .mandelbulb3D,
+        .monster,
+        .remnantX,
+        .mandelbulbIQ,
+        .syntopiaIFS,
+        .fractalExplorer,
+        .mandelboxSweeper,
+        .cosmicPearl
+    ]
 
     var title: String {
         switch self {
@@ -44,6 +82,13 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         case .valueNoise2D: "Noise - value - 2D"
         case .fluxCore: "Flux Core"
         case .apollonian: "Apollonian"
+        case .mandelbulbIQ: "Mandelbulb IQ"
+        case .syntopiaIFS: "Syntopia IFS"
+        case .fractalExplorer: "Fractal Explorer"
+        case .lightAndMotion: "Light & Motion"
+        case .mandelboxSweeper: "Mandelbox Sweeper"
+        case .shaderF3BGzW: "Shader f3BGzW"
+        case .cosmicPearl: "Cosmic Pearl"
         }
     }
 
@@ -56,8 +101,8 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         case .multibrot: "幂次推广 Mandelbrot"
         case .mandelbox: "折叠盒式轨道"
         case .mandelbulb3D: "三维距离场分形"
-        case .monster: "Shadertoy 折叠怪兽"
-        case .remnantX: "残骸隧道折叠"
+        case .monster: "Shadertoy 3D 折叠怪兽"
+        case .remnantX: "Mandelbox 残骸隧道"
         case .oceanic: "分形噪声海面"
         case .simplicityGalaxy: "螺旋星云分形"
         case .galaxyOfUniverses: "多尺度星系场"
@@ -67,6 +112,30 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         case .valueNoise2D: "二维值噪声"
         case .fluxCore: "极坐标能量核心"
         case .apollonian: "圆反演填隙"
+        case .mandelbulbIQ: "IQ 多项式 Mandelbulb"
+        case .syntopiaIFS: "KIFS 折叠距离场"
+        case .fractalExplorer: "Dave Hoskins 3D 探索"
+        case .lightAndMotion: "光线运动纹理"
+        case .mandelboxSweeper: "Mandelbox 扫掠结构"
+        case .shaderF3BGzW: "URL 分形纹理"
+        case .cosmicPearl: "宇宙珍珠距离场"
+        }
+    }
+
+    var sourceURL: String? {
+        switch self {
+        case .monster: "https://www.shadertoy.com/view/4sX3R2"
+        case .remnantX: "https://www.shadertoy.com/view/4sjSW1"
+        case .galaxyOfUniverses: "https://www.shadertoy.com/view/MdXSzS"
+        case .apollonian: "https://www.shadertoy.com/view/4ds3zn"
+        case .mandelbulbIQ: "https://www.shadertoy.com/view/ltfSWn"
+        case .syntopiaIFS: "https://www.shadertoy.com/view/Mdf3z7"
+        case .fractalExplorer: "https://www.shadertoy.com/view/4s3GW2"
+        case .lightAndMotion: "https://www.shadertoy.com/view/4stBzr"
+        case .mandelboxSweeper: "https://www.shadertoy.com/view/3lyXDm"
+        case .shaderF3BGzW: "https://www.shadertoy.com/view/f3BGzW"
+        case .cosmicPearl: "https://www.shadertoy.com/view/NcS3Wz"
+        default: nil
         }
     }
 
@@ -90,6 +159,13 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         case .valueNoise2D: "checkerboard.rectangle"
         case .fluxCore: "bolt.circle"
         case .apollonian: "circle.hexagongrid"
+        case .mandelbulbIQ: "cube.transparent"
+        case .syntopiaIFS: "pyramid"
+        case .fractalExplorer: "viewfinder.circle"
+        case .lightAndMotion: "lightbulb"
+        case .mandelboxSweeper: "rectangle.3.group"
+        case .shaderF3BGzW: "waveform.path.ecg.rectangle"
+        case .cosmicPearl: "circle.dotted"
         }
     }
 
@@ -152,9 +228,9 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
                 juliaConstant: SIMD2(-0.8, 0.156)
             )
         case .monster:
-            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.25, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 0.95, maxScale: 10, juliaConstant: SIMD2(-0.8, 0.156))
         case .remnantX:
-            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.35, maxScale: 18, juliaConstant: SIMD2(-0.8, 0.156))
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.05, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
         case .oceanic:
             FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.8, maxScale: 20, juliaConstant: SIMD2(-0.8, 0.156))
         case .simplicityGalaxy:
@@ -173,6 +249,20 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
             FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.35, maxScale: 18, juliaConstant: SIMD2(-0.8, 0.156))
         case .apollonian:
             FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.1, maxScale: 20, juliaConstant: SIMD2(-0.8, 0.156))
+        case .mandelbulbIQ:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 0.86, maxScale: 8, juliaConstant: SIMD2(-0.8, 0.156))
+        case .syntopiaIFS:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.05, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
+        case .fractalExplorer:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.1, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
+        case .lightAndMotion:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.8, maxScale: 20, juliaConstant: SIMD2(-0.8, 0.156))
+        case .mandelboxSweeper:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.05, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
+        case .shaderF3BGzW:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.65, maxScale: 20, juliaConstant: SIMD2(-0.8, 0.156))
+        case .cosmicPearl:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.0, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
         }
     }
 }
@@ -311,7 +401,7 @@ final class FractalViewport {
     }
 
     var is3D: Bool {
-        kind == .mandelbulb3D
+        FractalKind.threeDimensionalCases.contains(kind)
     }
 
     var renderBackgroundColor: SIMD3<Double> {
