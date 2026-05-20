@@ -28,6 +28,26 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
     case mandelboxSweeper = 22
     case shaderF3BGzW = 23
     case cosmicPearl = 24
+    case quaternionJulia = 25
+    case quaternionMandelbrot = 26
+    case burningShip4D = 27
+    case newton4D = 28
+    case multibrot4D = 29
+    case mandelbox4D = 30
+    case oceanic4D = 31
+    case simplicityGalaxy4D = 32
+    case galaxyOfUniverses4D = 33
+    case fractalExplorerDOF4D = 34
+    case basicMonteCarlo4D = 35
+    case mysteryMountains4D = 36
+    case valueNoise4D = 37
+    case fluxCore4D = 38
+    case apollonian4D = 39
+    case lightAndMotion4D = 40
+    case shaderF3BGzW4D = 41
+    case blackHole3D = 42
+    case galaxyOfUniverses3DScene = 43
+    case relativisticBlackHole = 46
 
     var id: Self { self }
 
@@ -62,6 +82,32 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         .cosmicPearl
     ]
 
+    static let fourDimensionalCases: [FractalKind] = [
+        .quaternionMandelbrot,
+        .quaternionJulia,
+        .burningShip4D,
+        .newton4D,
+        .multibrot4D,
+        .mandelbox4D,
+        .oceanic4D,
+        .simplicityGalaxy4D,
+        .galaxyOfUniverses4D,
+        .fractalExplorerDOF4D,
+        .basicMonteCarlo4D,
+        .mysteryMountains4D,
+        .valueNoise4D,
+        .fluxCore4D,
+        .apollonian4D,
+        .lightAndMotion4D,
+        .shaderF3BGzW4D
+    ]
+
+    static let otherCases: [FractalKind] = [
+        .galaxyOfUniverses3DScene,
+        .blackHole3D,
+        .relativisticBlackHole
+    ]
+
     var title: String {
         switch self {
         case .mandelbrot: "Mandelbrot"
@@ -89,6 +135,26 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         case .mandelboxSweeper: "Mandelbox Sweeper"
         case .shaderF3BGzW: "Shader f3BGzW"
         case .cosmicPearl: "Cosmic Pearl"
+        case .quaternionJulia: "Quaternion Julia"
+        case .quaternionMandelbrot: "Quaternion Mandelbrot"
+        case .burningShip4D: "Burning Ship 4D"
+        case .newton4D: "Newton 4D"
+        case .multibrot4D: "Multibrot 4D"
+        case .mandelbox4D: "Mandelbox 4D"
+        case .oceanic4D: "Oceanic 4D"
+        case .simplicityGalaxy4D: "Simplicity Galaxy 4D"
+        case .galaxyOfUniverses4D: "Galaxy of Universes 4D"
+        case .fractalExplorerDOF4D: "Fractal Explorer DOF 4D"
+        case .basicMonteCarlo4D: "Basic Montecarlo 4D"
+        case .mysteryMountains4D: "Mystery Mountains 4D"
+        case .valueNoise4D: "Noise - value - 4D"
+        case .fluxCore4D: "Flux Core 4D"
+        case .apollonian4D: "Apollonian 4D"
+        case .lightAndMotion4D: "Light & Motion 4D"
+        case .shaderF3BGzW4D: "Shader f3BGzW 4D"
+        case .blackHole3D: "Black Hole 3D"
+        case .galaxyOfUniverses3DScene: "Galaxy of Universes 3D"
+        case .relativisticBlackHole: "Relativistic Black Hole"
         }
     }
 
@@ -119,6 +185,26 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         case .mandelboxSweeper: "Mandelbox 扫掠结构"
         case .shaderF3BGzW: "URL 分形纹理"
         case .cosmicPearl: "宇宙珍珠距离场"
+        case .quaternionJulia: "四元数 Julia 切片"
+        case .quaternionMandelbrot: "四元数 Mandelbrot 切片"
+        case .burningShip4D: "燃烧船四维提升"
+        case .newton4D: "根吸引域四维切片"
+        case .multibrot4D: "幂次集四维提升"
+        case .mandelbox4D: "四维盒式折叠"
+        case .oceanic4D: "海面噪声四维体"
+        case .simplicityGalaxy4D: "星云四维体"
+        case .galaxyOfUniverses4D: "宇宙场四维体"
+        case .fractalExplorerDOF4D: "景深折叠四维体"
+        case .basicMonteCarlo4D: "采样纹理四维体"
+        case .mysteryMountains4D: "山脉地形四维体"
+        case .valueNoise4D: "值噪声四维体"
+        case .fluxCore4D: "能量核心四维体"
+        case .apollonian4D: "圆反演四维提升"
+        case .lightAndMotion4D: "光线运动四维体"
+        case .shaderF3BGzW4D: "URL 纹理四维体"
+        case .blackHole3D: "真实比例事件视界"
+        case .galaxyOfUniverses3DScene: "MdXSzS 三维宇宙场"
+        case .relativisticBlackHole: "Shadertoy 3dSyzD"
         }
     }
 
@@ -135,6 +221,8 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         case .mandelboxSweeper: "https://www.shadertoy.com/view/3lyXDm"
         case .shaderF3BGzW: "https://www.shadertoy.com/view/f3BGzW"
         case .cosmicPearl: "https://www.shadertoy.com/view/NcS3Wz"
+        case .galaxyOfUniverses3DScene: "https://www.shadertoy.com/view/MdXSzS"
+        case .relativisticBlackHole: "https://www.shadertoy.com/view/3dSyzD"
         default: nil
         }
     }
@@ -166,6 +254,35 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         case .mandelboxSweeper: "rectangle.3.group"
         case .shaderF3BGzW: "waveform.path.ecg.rectangle"
         case .cosmicPearl: "circle.dotted"
+        case .quaternionJulia: "cube.transparent"
+        case .quaternionMandelbrot: "cube.transparent"
+        case .burningShip4D: "flame"
+        case .newton4D: "function"
+        case .multibrot4D: "number"
+        case .mandelbox4D: "shippingbox"
+        case .oceanic4D: "water.waves"
+        case .simplicityGalaxy4D: "sparkle.magnifyingglass"
+        case .galaxyOfUniverses4D: "sparkles"
+        case .fractalExplorerDOF4D: "viewfinder"
+        case .basicMonteCarlo4D: "die.face.5"
+        case .mysteryMountains4D: "mountain.2"
+        case .valueNoise4D: "checkerboard.rectangle"
+        case .fluxCore4D: "bolt.circle"
+        case .apollonian4D: "circle.hexagongrid"
+        case .lightAndMotion4D: "lightbulb"
+        case .shaderF3BGzW4D: "waveform.path.ecg.rectangle"
+        case .blackHole3D: "circle.circle"
+        case .galaxyOfUniverses3DScene: "sparkles.rectangle.stack"
+        case .relativisticBlackHole: "camera.aperture"
+        }
+    }
+
+    var isBlackHole: Bool {
+        switch self {
+        case .blackHole3D, .relativisticBlackHole:
+            true
+        default:
+            false
         }
     }
 
@@ -263,6 +380,46 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
             FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.65, maxScale: 20, juliaConstant: SIMD2(-0.8, 0.156))
         case .cosmicPearl:
             FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.0, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
+        case .quaternionJulia:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 0.92, maxScale: 8, juliaConstant: SIMD2(-0.18, 0.72))
+        case .quaternionMandelbrot:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.25, maxScale: 10, juliaConstant: SIMD2(-0.8, 0.156))
+        case .burningShip4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(-0.1, -0.1), defaultScale: 1.35, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
+        case .newton4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.35, maxScale: 10, juliaConstant: SIMD2(-0.8, 0.156))
+        case .multibrot4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.3, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
+        case .mandelbox4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.15, maxScale: 10, juliaConstant: SIMD2(-0.8, 0.156))
+        case .oceanic4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.5, maxScale: 14, juliaConstant: SIMD2(-0.8, 0.156))
+        case .simplicityGalaxy4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.35, maxScale: 14, juliaConstant: SIMD2(-0.8, 0.156))
+        case .galaxyOfUniverses4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.55, maxScale: 16, juliaConstant: SIMD2(-0.8, 0.156))
+        case .fractalExplorerDOF4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.2, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
+        case .basicMonteCarlo4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.3, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
+        case .mysteryMountains4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0.05), defaultScale: 1.45, maxScale: 16, juliaConstant: SIMD2(-0.8, 0.156))
+        case .valueNoise4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.55, maxScale: 16, juliaConstant: SIMD2(-0.8, 0.156))
+        case .fluxCore4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.2, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
+        case .apollonian4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.05, maxScale: 12, juliaConstant: SIMD2(-0.8, 0.156))
+        case .lightAndMotion4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.45, maxScale: 14, juliaConstant: SIMD2(-0.8, 0.156))
+        case .shaderF3BGzW4D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.35, maxScale: 14, juliaConstant: SIMD2(-0.8, 0.156))
+        case .blackHole3D:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.0, maxScale: 32, juliaConstant: SIMD2(-0.8, 0.156))
+        case .galaxyOfUniverses3DScene:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.45, maxScale: 24, juliaConstant: SIMD2(-0.8, 0.156))
+        case .relativisticBlackHole:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.0, maxScale: 32, juliaConstant: SIMD2(-0.8, 0.156))
         }
     }
 }
@@ -377,8 +534,11 @@ final class FractalViewport {
     var bailoutRadius: Double = 256
     var precisionMode: PrecisionMode = .automatic
     var juliaConstant: SIMD2<Double> = FractalKind.mandelbrot.definition.juliaConstant
+    var quaternionConstantZW: SIMD2<Double> = SIMD2(0.12, -0.18)
+    var fourDSlice: Double = 0.18
     var multibrotPower: Double = 3
     var mandelbulbPower: Double = 8
+    var blackHoleMassSolar: Double = 10
     var cameraPitch: Double = 22
     var cameraDistance: Double = 3.4
     var rayMarchSteps: Double = 96
@@ -404,8 +564,28 @@ final class FractalViewport {
         FractalKind.threeDimensionalCases.contains(kind)
     }
 
+    var is4D: Bool {
+        FractalKind.fourDimensionalCases.contains(kind)
+    }
+
+    var isOther: Bool {
+        FractalKind.otherCases.contains(kind)
+    }
+
+    var isSpatial: Bool {
+        is3D || is4D || isOther
+    }
+
     var renderBackgroundColor: SIMD3<Double> {
         backgroundPreset == .custom ? customBackgroundColor : backgroundPreset.color
+    }
+
+    var blackHoleSchwarzschildRadiusKilometers: Double {
+        max(blackHoleMassSolar, 0.0001) * 2.95325008
+    }
+
+    var blackHoleCameraDistanceKilometers: Double {
+        blackHoleSchwarzschildRadiusKilometers * max(cameraDistance, 0)
     }
 
     /// More iterations when zoomed in (smaller scale).
@@ -420,12 +600,27 @@ final class FractalViewport {
         scale = definition.defaultScale
         rotationDegrees = 0
         juliaConstant = definition.juliaConstant
-        if is3D {
+        if is4D {
+            quaternionConstantZW = SIMD2(0.12, -0.18)
+            fourDSlice = 0.18
+        }
+        if isSpatial {
             cameraPitch = 22
             cameraDistance = 3.4
             mandelbulbPower = 8
             rayMarchSteps = 96
             surfaceDetail = 0.0012
+        }
+        if kind.isBlackHole {
+            cameraPitch = 12
+            cameraDistance = 36
+            rayMarchSteps = 144
+            surfaceDetail = 0.001
+        } else if kind == .galaxyOfUniverses3DScene {
+            cameraPitch = 18
+            cameraDistance = 5.6
+            rayMarchSteps = 128
+            surfaceDetail = 0.0014
         }
     }
 
@@ -438,6 +633,15 @@ final class FractalViewport {
             Double(screenDelta.y / viewSize.y) * 2
         ))
         center -= uvDelta * scale
+    }
+
+    func rotateCamera(screenDelta: SIMD2<Float>, viewSize: SIMD2<Float>) {
+        guard isSpatial, viewSize.x > 0, viewSize.y > 0 else { return }
+
+        let yawDelta = Double(screenDelta.x / viewSize.x) * 180
+        let pitchDelta = Double(screenDelta.y / viewSize.y) * 140
+        rotationDegrees = wrappedDegrees(rotationDegrees + yawDelta)
+        cameraPitch = min(max(cameraPitch + pitchDelta, -55), 55)
     }
 
     func zoom(by factor: Float, anchorScreen: SIMD2<Float>, viewSize: SIMD2<Float>) {
@@ -464,5 +668,15 @@ final class FractalViewport {
         let c = cos(radians)
         let s = sin(radians)
         return SIMD2(point.x * c - point.y * s, point.x * s + point.y * c)
+    }
+
+    private func wrappedDegrees(_ value: Double) -> Double {
+        var result = value.truncatingRemainder(dividingBy: 360)
+        if result > 180 {
+            result -= 360
+        } else if result < -180 {
+            result += 360
+        }
+        return result
     }
 }

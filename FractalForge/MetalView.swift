@@ -68,8 +68,15 @@ final class InteractiveMTKView: MTKView {
 
     private var isDragging = false
     private var lastDragLocation: CGPoint = .zero
+    private var dragMode: DragMode = .none
     private var idleTimer: Timer?
     private var appObservers: [NSObjectProtocol] = []
+
+    private enum DragMode {
+        case none
+        case pan
+        case rotateCamera
+    }
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -287,6 +294,7 @@ final class InteractiveMTKView: MTKView {
 
         beginInteraction()
         isDragging = true
+        dragMode = viewport?.isSpatial == true ? .rotateCamera : .pan
         lastDragLocation = convert(event.locationInWindow, from: nil)
     }
 
@@ -297,17 +305,28 @@ final class InteractiveMTKView: MTKView {
 
         let location = convert(event.locationInWindow, from: nil)
         let delta = screenPointInPixels(location) - screenPointInPixels(lastDragLocation)
-        viewport.pan(screenDelta: delta, viewSize: viewSizeInPixels)
+        switch dragMode {
+        case .none:
+            break
+        case .pan:
+            viewport.pan(screenDelta: delta, viewSize: viewSizeInPixels)
+        case .rotateCamera:
+            viewport.rotateCamera(screenDelta: delta, viewSize: viewSizeInPixels)
+        }
         lastDragLocation = location
     }
 
     override func mouseUp(with event: NSEvent) {
         isDragging = false
+        dragMode = .none
         endInteractionSoon()
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        mouseDown(with: event)
+        beginInteraction()
+        isDragging = true
+        dragMode = .pan
+        lastDragLocation = convert(event.locationInWindow, from: nil)
     }
 
     override func rightMouseDragged(with event: NSEvent) {

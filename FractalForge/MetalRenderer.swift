@@ -32,7 +32,6 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         guard let window = view.window,
               !window.isMiniaturized,
               window.occlusionState.contains(.visible),
-              let pipelineState,
               let drawable = view.currentDrawable,
               let commandBuffer = commandQueue.makeCommandBuffer()
         else {
@@ -71,10 +70,13 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             colorPalette: viewport.colorPalette.rawValue,
             antialiasingMode: viewport.antialiasingMode.rawValue,
             smoothColoring: viewport.smoothColoring ? 1 : 0,
-            rayMarchSteps: Int32(viewport.rayMarchSteps)
+            rayMarchSteps: Int32(viewport.rayMarchSteps),
+            quaternionConstantZW: SIMD2(Float(viewport.quaternionConstantZW.x), Float(viewport.quaternionConstantZW.y)),
+            fourDSlice: Float(viewport.fourDSlice)
         )
         uniforms.applyDoublePrecision(center: viewport.center, scale: viewport.scale)
 
+        guard let pipelineState else { return }
         let passDescriptor = MTLRenderPassDescriptor()
         let backgroundColor = viewport.renderBackgroundColor
         passDescriptor.colorAttachments[0].texture = drawable.texture
@@ -99,6 +101,10 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         commandBuffer.present(drawable)
         commandBuffer.commit()
 
+        recordFrame()
+    }
+
+    private func recordFrame() {
         frameCount += 1
         framesSinceFPSUpdate += 1
 
@@ -129,15 +135,24 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             return
         }
 
+        pipelineState = makePipelineState(vertexFunction: vertexFunction, fragmentFunction: fragmentFunction, pixelFormat: pixelFormat)
+    }
+
+    private func makePipelineState(
+        vertexFunction: MTLFunction,
+        fragmentFunction: MTLFunction,
+        pixelFormat: MTLPixelFormat
+    ) -> MTLRenderPipelineState? {
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertexFunction
         descriptor.fragmentFunction = fragmentFunction
         descriptor.colorAttachments[0].pixelFormat = pixelFormat
 
         do {
-            pipelineState = try device.makeRenderPipelineState(descriptor: descriptor)
+            return try device.makeRenderPipelineState(descriptor: descriptor)
         } catch {
-            NSLog("FractalForge: render pipeline failed: \(error)")
+            NSLog("FractalForge: render pipeline failed for \(pixelFormat): \(error)")
+            return nil
         }
     }
 }
@@ -167,6 +182,8 @@ private struct FrameUniforms {
     var antialiasingMode: Int32
     var smoothColoring: Int32
     var rayMarchSteps: Int32
+    var quaternionConstantZW: SIMD2<Float>
+    var fourDSlice: Float
 
     mutating func applyDoublePrecision(center: SIMD2<Double>, scale: Double) {
         let cx = Self.split(center.x)

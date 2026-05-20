@@ -152,6 +152,20 @@ private struct AlgorithmSidebar: View {
                         viewport: viewport,
                         selectionBackground: selectionBackground
                     )
+
+                    AlgorithmSection(
+                        title: "4D",
+                        kinds: FractalKind.fourDimensionalCases,
+                        viewport: viewport,
+                        selectionBackground: selectionBackground
+                    )
+
+                    AlgorithmSection(
+                        title: "其它",
+                        kinds: FractalKind.otherCases,
+                        viewport: viewport,
+                        selectionBackground: selectionBackground
+                    )
                 }
             }
 
@@ -181,7 +195,10 @@ private struct AlgorithmSection: View {
 
             ForEach(kinds) { kind in
                 Button {
-                    viewport.kind = kind
+                    if viewport.kind != kind {
+                        viewport.kind = kind
+                        viewport.reset()
+                    }
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: kind.systemImage)
@@ -247,21 +264,26 @@ private struct ParameterInspector: View {
                     NumberField("中心 X", value: centerX, digits: 8)
                     NumberField("中心 Y", value: centerY, digits: 8)
                     NumberField("缩放", value: $viewport.scale, digits: 8)
-                    SliderRow(viewport.is3D ? "水平旋转" : "旋转", value: $viewport.rotationDegrees, range: -180...180, suffix: "°")
+                    SliderRow(viewport.isSpatial ? "水平旋转" : "旋转", value: $viewport.rotationDegrees, range: -180...180, suffix: "°")
                     SliderRow("缩放速度", value: $viewport.zoomSpeed, range: 0.02...0.18)
                 }
 
-                if viewport.is3D {
-                    InspectorSection("3D 相机") {
+                if viewport.isSpatial {
+                    InspectorSection(viewport.kind.isBlackHole ? "真实尺寸相机" : (viewport.is4D ? "4D 投影视角" : "3D 相机")) {
                         SliderRow("俯仰角", value: $viewport.cameraPitch, range: -55...55, suffix: "°")
-                        SliderRow("相机距离", value: $viewport.cameraDistance, range: 1.4...8.0)
+                        if viewport.kind.isBlackHole {
+                            SliderRow("相机距离", value: $viewport.cameraDistance, range: 6...160, step: 1, suffix: " Rs")
+                            LabeledContent("实际距离", value: blackHoleCameraDistanceText)
+                        } else {
+                            SliderRow("相机距离", value: $viewport.cameraDistance, range: 1.4...8.0)
+                        }
                     }
                 }
 
                 InspectorSection("迭代") {
                     SliderRow("最大迭代", value: $viewport.maxIterationsLimit, range: 64...4096, step: 64)
                     SliderRow("逃逸半径", value: $viewport.bailoutRadius, range: 2...512, step: 2)
-                    if viewport.is3D {
+                    if viewport.isSpatial {
                         SliderRow("射线步数", value: $viewport.rayMarchSteps, range: 32...192, step: 8)
                         SliderRow("表面精度", value: $viewport.surfaceDetail, range: 0.0004...0.006, step: 0.0002)
                     }
@@ -279,7 +301,19 @@ private struct ParameterInspector: View {
                         NumberField("Julia c 虚部", value: juliaY, digits: 5)
                     }
 
-                    if viewport.kind == .multibrot {
+                    if viewport.kind == .quaternionJulia {
+                        NumberField("C x", value: juliaX, digits: 5)
+                        NumberField("C y", value: juliaY, digits: 5)
+                        NumberField("C z", value: quaternionZ, digits: 5)
+                        NumberField("C w", value: quaternionW, digits: 5)
+                    }
+
+                    if viewport.is4D {
+                        SliderRow("切片 W", value: $viewport.fourDSlice, range: -1.2...1.2, step: 0.01)
+                        LabeledContent("投影方式", value: viewport.kind == .quaternionJulia || viewport.kind == .quaternionMandelbrot ? "四元数距离估计" : "4D 体切片 / Ray Marching")
+                    }
+
+                    if viewport.kind == .multibrot || viewport.kind == .multibrot4D {
                         SliderRow("Multibrot 幂次", value: $viewport.multibrotPower, range: 2...8, step: 0.1)
                     }
 
@@ -287,17 +321,27 @@ private struct ParameterInspector: View {
                         SliderRow("Mandelbulb 幂次", value: $viewport.mandelbulbPower, range: 2...12, step: 0.1)
                     }
 
+                    if viewport.kind.isBlackHole {
+                        NumberField("质量 M☉", value: $viewport.blackHoleMassSolar, digits: 3)
+                        LabeledContent("物理模型", value: "Schwarzschild 黑洞")
+                        LabeledContent("比例单位", value: "Rs = 2GM / c²")
+                        LabeledContent("Rs 半径", value: blackHoleSchwarzschildRadiusText)
+                        LabeledContent("事件视界直径", value: blackHoleEventHorizonDiameterText)
+                        LabeledContent("光子环半径", value: blackHolePhotonRingText)
+                        LabeledContent("吸积盘半径", value: blackHoleDiskRangeText)
+                    }
+
                     if viewport.kind == .newton {
                         LabeledContent("Newton 根模式", value: "z³ - 1")
                     }
 
-                    if viewport.kind != .julia && viewport.kind != .multibrot && viewport.kind != .newton && viewport.kind != .mandelbulb3D {
+                    if viewport.kind != .julia && viewport.kind != .multibrot && viewport.kind != .newton && viewport.kind != .mandelbulb3D && viewport.kind != .quaternionJulia && !viewport.kind.isBlackHole {
                         LabeledContent("当前公式", value: viewport.kind.title)
                     }
 
                     if let sourceURL = viewport.kind.sourceURL {
                         LabeledContent("来源 URL", value: sourceURL)
-                    } else if viewport.kind.rawValue >= FractalKind.oceanic.rawValue {
+                    } else if viewport.kind.rawValue >= FractalKind.oceanic.rawValue && !viewport.is4D && !viewport.isOther {
                         LabeledContent("来源页", value: "Shadertoy Fractal 第 2 页")
                     }
                 }
@@ -370,6 +414,22 @@ private struct ParameterInspector: View {
         }
     }
 
+    private var quaternionZ: Binding<Double> {
+        Binding {
+            viewport.quaternionConstantZW.x
+        } set: {
+            viewport.quaternionConstantZW.x = $0
+        }
+    }
+
+    private var quaternionW: Binding<Double> {
+        Binding {
+            viewport.quaternionConstantZW.y
+        } set: {
+            viewport.quaternionConstantZW.y = $0
+        }
+    }
+
     private var backgroundColor: Binding<Color> {
         Binding {
             let color = viewport.customBackgroundColor
@@ -383,6 +443,42 @@ private struct ParameterInspector: View {
                 Double(color.blueComponent)
             )
         }
+    }
+
+    private var blackHoleSchwarzschildRadiusText: String {
+        formatAstroDistance(viewport.blackHoleSchwarzschildRadiusKilometers)
+    }
+
+    private var blackHoleEventHorizonDiameterText: String {
+        formatAstroDistance(viewport.blackHoleSchwarzschildRadiusKilometers * 2)
+    }
+
+    private var blackHolePhotonRingText: String {
+        formatAstroDistance(viewport.blackHoleSchwarzschildRadiusKilometers * 1.5)
+    }
+
+    private var blackHoleDiskRangeText: String {
+        "\(formatAstroDistance(viewport.blackHoleSchwarzschildRadiusKilometers * 3)) - \(formatAstroDistance(viewport.blackHoleSchwarzschildRadiusKilometers * 14))"
+    }
+
+    private var blackHoleCameraDistanceText: String {
+        formatAstroDistance(viewport.blackHoleCameraDistanceKilometers)
+    }
+
+    private func formatAstroDistance(_ kilometers: Double) -> String {
+        let value = max(kilometers, 0)
+        let astronomicalUnit = 149_597_870.7
+
+        if value >= astronomicalUnit * 0.01 {
+            return String(format: "%.3f AU", value / astronomicalUnit)
+        }
+        if value >= 1_000_000 {
+            return String(format: "%.2f million km", value / 1_000_000)
+        }
+        if value >= 1_000 {
+            return String(format: "%.0f km", value)
+        }
+        return String(format: "%.2f km", value)
     }
 }
 
