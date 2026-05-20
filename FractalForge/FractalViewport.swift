@@ -47,6 +47,8 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
     case shaderF3BGzW4D = 41
     case blackHole3D = 42
     case galaxyOfUniverses3DScene = 43
+    case kerrNewmanBlackHole = 44
+    case gargantuaBlackHole = 45
     case relativisticBlackHole = 46
 
     var id: Self { self }
@@ -104,6 +106,8 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
 
     static let otherCases: [FractalKind] = [
         .galaxyOfUniverses3DScene,
+        .kerrNewmanBlackHole,
+        .gargantuaBlackHole,
         .blackHole3D,
         .relativisticBlackHole
     ]
@@ -154,6 +158,8 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         case .shaderF3BGzW4D: "Shader f3BGzW 4D"
         case .blackHole3D: "Black Hole 3D"
         case .galaxyOfUniverses3DScene: "Galaxy of Universes 3D"
+        case .kerrNewmanBlackHole: "Kerr-Newman Black Hole"
+        case .gargantuaBlackHole: "Gargantua Black Hole"
         case .relativisticBlackHole: "Relativistic Black Hole"
         }
     }
@@ -204,6 +210,8 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         case .shaderF3BGzW4D: "URL 纹理四维体"
         case .blackHole3D: "真实比例事件视界"
         case .galaxyOfUniverses3DScene: "MdXSzS 三维宇宙场"
+        case .kerrNewmanBlackHole: "Shadertoy wXdfzj"
+        case .gargantuaBlackHole: "Shadertoy W3BBzK"
         case .relativisticBlackHole: "Shadertoy 3dSyzD"
         }
     }
@@ -222,6 +230,8 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         case .shaderF3BGzW: "https://www.shadertoy.com/view/f3BGzW"
         case .cosmicPearl: "https://www.shadertoy.com/view/NcS3Wz"
         case .galaxyOfUniverses3DScene: "https://www.shadertoy.com/view/MdXSzS"
+        case .kerrNewmanBlackHole: "https://www.shadertoy.com/view/wXdfzj"
+        case .gargantuaBlackHole: "https://www.shadertoy.com/view/W3BBzK"
         case .relativisticBlackHole: "https://www.shadertoy.com/view/3dSyzD"
         default: nil
         }
@@ -273,13 +283,24 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
         case .shaderF3BGzW4D: "waveform.path.ecg.rectangle"
         case .blackHole3D: "circle.circle"
         case .galaxyOfUniverses3DScene: "sparkles.rectangle.stack"
+        case .kerrNewmanBlackHole: "circle.circle.fill"
+        case .gargantuaBlackHole: "circle.hexagongrid.fill"
         case .relativisticBlackHole: "camera.aperture"
         }
     }
 
     var isBlackHole: Bool {
         switch self {
-        case .blackHole3D, .relativisticBlackHole:
+        case .blackHole3D, .kerrNewmanBlackHole, .gargantuaBlackHole, .relativisticBlackHole:
+            true
+        default:
+            false
+        }
+    }
+
+    var usesShadertoyInput: Bool {
+        switch self {
+        case .kerrNewmanBlackHole, .gargantuaBlackHole:
             true
         default:
             false
@@ -418,6 +439,10 @@ enum FractalKind: Int32, CaseIterable, Identifiable {
             FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.0, maxScale: 32, juliaConstant: SIMD2(-0.8, 0.156))
         case .galaxyOfUniverses3DScene:
             FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.45, maxScale: 24, juliaConstant: SIMD2(-0.8, 0.156))
+        case .kerrNewmanBlackHole:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.0, maxScale: 32, juliaConstant: SIMD2(-0.8, 0.156))
+        case .gargantuaBlackHole:
+            FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.0, maxScale: 32, juliaConstant: SIMD2(-0.8, 0.156))
         case .relativisticBlackHole:
             FractalDefinition(kind: self, defaultCenter: SIMD2(0, 0), defaultScale: 1.0, maxScale: 32, juliaConstant: SIMD2(-0.8, 0.156))
         }
@@ -553,6 +578,8 @@ final class FractalViewport {
     var antialiasingMode: AntialiasingMode = .automatic
     var fpsCap: Double = 60
     var livePreview: Bool = true
+    var shadertoyMouse = SIMD4<Double>(0, 0, -1, -1)
+    var shadertoyKeyMask: Int32 = 0
 
     private let minScale: Double = 1e-14
 
@@ -600,6 +627,8 @@ final class FractalViewport {
         scale = definition.defaultScale
         rotationDegrees = 0
         juliaConstant = definition.juliaConstant
+        shadertoyMouse = SIMD4<Double>(0, 0, -1, -1)
+        shadertoyKeyMask = 0
         if is4D {
             quaternionConstantZW = SIMD2(0.12, -0.18)
             fourDSlice = 0.18
@@ -655,6 +684,10 @@ final class FractalViewport {
         let anchorAfter = center + uv * newScale
         center += anchorBefore - anchorAfter
         scale = newScale
+    }
+
+    func wrappedCameraDegrees(_ value: Double) -> Double {
+        wrappedDegrees(value)
     }
 
     private func screenToComplexUV(_ screen: SIMD2<Float>, viewSize: SIMD2<Float>, aspect: Double) -> SIMD2<Double> {

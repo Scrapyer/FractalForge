@@ -28,6 +28,10 @@ struct FrameUniforms {
     int rayMarchSteps;
     float2 quaternionConstantZW;
     float fourDSlice;
+    float timeDelta;
+    int frameIndex;
+    float4 shadertoyMouse;
+    int shadertoyKeyMask;
 };
 
 struct DS {
@@ -1637,97 +1641,941 @@ inline float3 renderBlackHole3D(float2 uv, constant FrameUniforms &uniforms) {
     return max(color * 0.62f, signature);
 }
 
-inline float3 renderShadertoyWxdfzjBase(float2 uv, constant FrameUniforms &uniforms) {
+struct WxKerrGeometry {
+    float r;
+    float r2;
+    float a2;
+    float f;
+    float3 gradR;
+    float3 gradF;
+    float4 lUp;
+    float4 lDown;
+    float invR2A2;
+    float invDenF;
+    float numF;
+};
+
+struct WxState {
+    float4 x;
+    float4 p;
+};
+
+struct WxCameraState {
+    float3 position;
+    float3 right;
+    float3 up;
+    float3 forward;
+    float universeSign;
+    bool valid;
+};
+
+inline float wxCubicInterpolate(float x) {
+    return x * x * (3.0f - 2.0f * x);
+}
+
+inline float wxKerrSchildRadius(float3 p, float physicalSpinA, float rSign) {
+    if (abs(physicalSpinA) < 1e-7f) {
+        return rSign * length(p);
+    }
+
+    const float a2 = physicalSpinA * physicalSpinA;
+    const float rho2 = dot(p.xz, p.xz);
+    const float y2 = p.y * p.y;
+    const float b = rho2 + y2 - a2;
+    const float det = sqrt(max(b * b + 4.0f * a2 * y2, 0.0f));
+    const float r2 = b >= 0.0f ? 0.5f * (b + det) : (2.0f * a2 * y2) / max(det - b, 1e-20f);
+    return rSign * sqrt(max(r2, 0.0f));
+}
+
+inline float wxKeplerianAngularVelocity(float radius, float physicalSpinA, float physicalQ) {
+    const float mass = 0.5f;
+    const float mrMinusQ2 = mass * radius - physicalQ * physicalQ;
+    if (mrMinusQ2 < 0.0f) {
+        return 0.0f;
+    }
+
+    const float sqrtTerm = sqrt(mrMinusQ2);
+    const float denominator = radius * radius + 0.5f * physicalSpinA * sqrtTerm;
+    return sqrtTerm / max(denominator, 1e-6f);
+}
+
+inline WxKerrGeometry wxComputeGeometryScalars(float3 x, float physicalSpinA, float physicalQ, float fade, float rSign) {
+    WxKerrGeometry geo;
+    geo.a2 = physicalSpinA * physicalSpinA;
+
+    if (abs(physicalSpinA) < 1e-7f) {
+        geo.r = rSign * max(length(x), 1e-6f);
+        geo.r2 = geo.r * geo.r;
+        const float invR = 1.0f / max(abs(geo.r), 1e-6f);
+        const float invR2 = invR * invR;
+        geo.lUp = float4(x * invR, -1.0f);
+        geo.lDown = float4(x * invR, 1.0f);
+        geo.numF = geo.r - physicalQ * physicalQ;
+        geo.f = (invR - physicalQ * physicalQ * invR2) * fade;
+        geo.invR2A2 = invR2;
+        geo.invDenF = 0.0f;
+        geo.gradR = float3(0.0f);
+        geo.gradF = float3(0.0f);
+        return geo;
+    }
+
+    geo.r = wxKerrSchildRadius(x, physicalSpinA, rSign);
+    geo.r2 = geo.r * geo.r;
+    const float r3 = geo.r2 * geo.r;
+    const float y2 = x.y * x.y;
+    geo.invR2A2 = 1.0f / max(geo.r2 + geo.a2, 1e-9f);
+
+    const float lx = (geo.r * x.x - physicalSpinA * x.z) * geo.invR2A2;
+    const float ly = x.y / max(geo.r, 1e-6f);
+    const float lz = (geo.r * x.z + physicalSpinA * x.x) * geo.invR2A2;
+    geo.lUp = float4(lx, ly, lz, -1.0f);
+    geo.lDown = float4(lx, ly, lz, 1.0f);
+
+    geo.numF = r3 - physicalQ * physicalQ * geo.r2;
+    const float denF = geo.r2 * geo.r2 + geo.a2 * y2;
+    geo.invDenF = 1.0f / max(denF, 1e-20f);
+    geo.f = geo.numF * geo.invDenF * fade;
+    geo.gradR = float3(0.0f);
+    geo.gradF = float3(0.0f);
+    return geo;
+}
+
+inline void wxComputeGeometryGradients(float3 x, float physicalSpinA, float physicalQ, float fade, thread WxKerrGeometry &geo) {
+    const float invR = 1.0f / max(abs(geo.r), 1e-6f);
+
+    if (abs(physicalSpinA) < 1e-7f) {
+        const float invR2 = invR * invR;
+        geo.gradR = x * invR;
+        const float dfDr = (-1.0f + 2.0f * physicalQ * physicalQ * invR) * invR2 * fade;
+        geo.gradF = dfDr * geo.gradR;
+        return;
+    }
+
+    const float d = 2.0f * geo.r2 - dot(x, x) + geo.a2;
+    const float denom = abs(geo.r * d) < 1e-9f ? sign(geo.r * d + 1e-9f) * 1e-9f : geo.r * d;
+    geo.gradR = float3(
+        x.x * geo.r2,
+        x.y * (geo.r2 + geo.a2),
+        x.z * geo.r2
+    ) / denom;
+
+    const float y2 = x.y * x.y;
+    const float termM = -geo.r2 * geo.r2 * geo.r;
+    const float termQ = 2.0f * physicalQ * physicalQ * geo.r2 * geo.r2;
+    const float termMa = 3.0f * geo.a2 * geo.r * y2;
+    const float termQa = -2.0f * physicalQ * physicalQ * geo.a2 * y2;
+    const float dfDr = geo.r * (termM + termQ + termMa + termQa) * geo.invDenF * geo.invDenF;
+    const float dfDy = -(geo.numF * 2.0f * geo.a2 * x.y) * geo.invDenF * geo.invDenF;
+
+    geo.gradF = dfDr * geo.gradR;
+    geo.gradF.y += dfDy;
+    geo.gradF *= fade;
+}
+
+inline float4 wxRaiseIndex(float4 pCov, WxKerrGeometry geo) {
+    const float4 pFlat = float4(pCov.xyz, -pCov.w);
+    const float lDotP = dot(geo.lUp, pCov);
+    return pFlat - geo.f * lDotP * geo.lUp;
+}
+
+inline float4 wxLowerIndex(float4 pContra, WxKerrGeometry geo) {
+    const float4 pFlat = float4(pContra.xyz, -pContra.w);
+    const float lDotP = dot(geo.lDown, pContra);
+    return pFlat + geo.f * lDotP * geo.lDown;
+}
+
+inline float4 wxInitialMomentum(float3 rayDir, float4 x, float physicalSpinA, float physicalQ, float fade, float universeSign) {
+    const WxKerrGeometry geo = wxComputeGeometryScalars(x.xyz, physicalSpinA, physicalQ, fade, universeSign);
+    const float gTT = -1.0f + geo.f;
+    const float4 uUp = float4(0.0f, 0.0f, 0.0f, 1.0f / sqrt(max(-gTT, 1e-8f)));
+    const float4 uDown = wxLowerIndex(uUp, geo);
+
+    float3 radial = -normalize(x.xyz);
+    float3 worldUp = abs(dot(radial, float3(0.0f, 1.0f, 0.0f))) > 0.999f ? float3(1.0f, 0.0f, 0.0f) : float3(0.0f, 1.0f, 0.0f);
+    float3 phi = normalize(cross(worldUp, radial));
+    float3 theta = normalize(cross(phi, radial));
+
+    const float kr = dot(rayDir, radial);
+    const float kt = dot(rayDir, theta);
+    const float kp = dot(rayDir, phi);
+
+    float4 e1 = float4(radial, 0.0f);
+    e1 += dot(e1, uDown) * uUp;
+    float4 e1Down = wxLowerIndex(e1, geo);
+    e1 /= sqrt(max(dot(e1, e1Down), 1e-8f));
+    e1Down = wxLowerIndex(e1, geo);
+
+    float4 e2 = float4(theta, 0.0f);
+    e2 += dot(e2, uDown) * uUp;
+    e2 -= dot(e2, e1Down) * e1;
+    float4 e2Down = wxLowerIndex(e2, geo);
+    e2 /= sqrt(max(dot(e2, e2Down), 1e-8f));
+    e2Down = wxLowerIndex(e2, geo);
+
+    float4 e3 = float4(phi, 0.0f);
+    e3 += dot(e3, uDown) * uUp;
+    e3 -= dot(e3, e1Down) * e1;
+    e3 -= dot(e3, e2Down) * e2;
+    float4 e3Down = wxLowerIndex(e3, geo);
+    e3 /= sqrt(max(dot(e3, e3Down), 1e-8f));
+
+    const float4 pUp = uUp - (kr * e1 + kt * e2 + kp * e3);
+    return wxLowerIndex(pUp, geo);
+}
+
+inline void wxApplyHamiltonianCorrection(thread float4 &p, float4 x, float energy, float physicalSpinA, float physicalQ, float fade, float rSign) {
+    p.w = -energy;
+    const WxKerrGeometry geo = wxComputeGeometryScalars(x.xyz, physicalSpinA, physicalQ, fade, rSign);
+    const float lDotPS = dot(geo.lUp.xyz, p.xyz);
+    const float coeffA = dot(p.xyz, p.xyz) - geo.f * lDotPS * lDotPS;
+    const float coeffB = 2.0f * geo.f * lDotPS * p.w;
+    const float coeffC = -p.w * p.w * (1.0f + geo.f);
+    const float disc = coeffB * coeffB - 4.0f * coeffA * coeffC;
+
+    if (disc >= 0.0f && abs(coeffA) > 1e-9f) {
+        const float sqrtDisc = sqrt(disc);
+        const float k1 = (-coeffB + sqrtDisc) / (2.0f * coeffA);
+        const float k2 = (-coeffB - sqrtDisc) / (2.0f * coeffA);
+        const float k = abs(k1 - 1.0f) < abs(k2 - 1.0f) ? k1 : k2;
+        p.xyz *= mix(k, 1.0f, clamp(abs(k - 1.0f) / 0.1f - 1.0f, 0.0f, 1.0f));
+    }
+}
+
+inline WxState wxDerivatives(WxState s, float physicalSpinA, float physicalQ, float fade, thread WxKerrGeometry &geo) {
+    wxComputeGeometryGradients(s.x.xyz, physicalSpinA, physicalQ, fade, geo);
+
+    WxState deriv;
+    const float lDotP = dot(geo.lUp, s.p);
+    deriv.x = float4(s.p.xyz, -s.p.w) - geo.f * lDotP * geo.lUp;
+
+    const float3 gradA = (-2.0f * geo.r * geo.invR2A2) * geo.invR2A2 * geo.gradR;
+    const float rxAz = geo.r * s.x.x - physicalSpinA * s.x.z;
+    const float rzAx = geo.r * s.x.z + physicalSpinA * s.x.x;
+
+    float3 dNumLx = s.x.x * geo.gradR;
+    dNumLx.x += geo.r;
+    dNumLx.z -= physicalSpinA;
+    const float3 gradLx = geo.invR2A2 * dNumLx + rxAz * gradA;
+
+    const float3 gradLy = (geo.r * float3(0.0f, 1.0f, 0.0f) - s.x.y * geo.gradR) / max(geo.r2, 1e-8f);
+
+    float3 dNumLz = s.x.z * geo.gradR;
+    dNumLz.z += geo.r;
+    dNumLz.x += physicalSpinA;
+    const float3 gradLz = geo.invR2A2 * dNumLz + rzAx * gradA;
+
+    const float3 pDotGradL = s.p.x * gradLx + s.p.y * gradLy + s.p.z * gradLz;
+    const float3 force = 0.5f * ((lDotP * lDotP) * geo.gradF + (2.0f * geo.f * lDotP) * pDotGradL);
+    deriv.p = float4(force, 0.0f);
+    return deriv;
+}
+
+inline float wxIntermediateSign(float4 startX, float4 currentX, float currentSign, float physicalSpinA) {
+    if (startX.y * currentX.y < 0.0f) {
+        const float t = startX.y / max(startX.y - currentX.y, 1e-8f);
+        const float rho = length(mix(startX.xz, currentX.xz, t));
+        if (rho < abs(physicalSpinA)) {
+            return -currentSign;
+        }
+    }
+    return currentSign;
+}
+
+inline void wxStepGeodesicRK4(thread float4 &x, thread float4 &p, float energy, float dt, float physicalSpinA, float physicalQ, float fade, float rSign, WxKerrGeometry geo0, WxState k1) {
+    const WxState s0 = WxState { x, p };
+
+    WxState s1 = WxState { s0.x + 0.5f * dt * k1.x, s0.p + 0.5f * dt * k1.p };
+    float sign1 = wxIntermediateSign(s0.x, s1.x, rSign, physicalSpinA);
+    WxKerrGeometry geo1 = wxComputeGeometryScalars(s1.x.xyz, physicalSpinA, physicalQ, fade, sign1);
+    WxState k2 = wxDerivatives(s1, physicalSpinA, physicalQ, fade, geo1);
+
+    WxState s2 = WxState { s0.x + 0.5f * dt * k2.x, s0.p + 0.5f * dt * k2.p };
+    float sign2 = wxIntermediateSign(s0.x, s2.x, rSign, physicalSpinA);
+    WxKerrGeometry geo2 = wxComputeGeometryScalars(s2.x.xyz, physicalSpinA, physicalQ, fade, sign2);
+    WxState k3 = wxDerivatives(s2, physicalSpinA, physicalQ, fade, geo2);
+
+    WxState s3 = WxState { s0.x + dt * k3.x, s0.p + dt * k3.p };
+    float sign3 = wxIntermediateSign(s0.x, s3.x, rSign, physicalSpinA);
+    WxKerrGeometry geo3 = wxComputeGeometryScalars(s3.x.xyz, physicalSpinA, physicalQ, fade, sign3);
+    WxState k4 = wxDerivatives(s3, physicalSpinA, physicalQ, fade, geo3);
+
+    float4 finalX = s0.x + (dt / 6.0f) * (k1.x + 2.0f * k2.x + 2.0f * k3.x + k4.x);
+    float4 finalP = s0.p + (dt / 6.0f) * (k1.p + 2.0f * k2.p + 2.0f * k3.p + k4.p);
+    const float finalSign = wxIntermediateSign(s0.x, finalX, rSign, physicalSpinA);
+    if (finalSign > 0.0f) {
+        wxApplyHamiltonianCorrection(finalP, finalX, energy, physicalSpinA, physicalQ, fade, finalSign);
+    }
+    x = finalX;
+    p = finalP;
+}
+
+inline float3 wxKelvinToRgb(float kelvin) {
+    if (kelvin < 400.01f) {
+        return float3(0.0f);
+    }
+
+    const float t = (kelvin - 6500.0f) / (6500.0f * kelvin * 2.2f);
+    float3 color = float3(exp(2.05539304e4f * t), exp(2.63463675e4f * t), exp(3.30145739e4f * t));
+    float brightnessScale = 1.0f / max(max(1.5f * color.r, color.g), color.b);
+    if (kelvin < 1000.0f) {
+        brightnessScale *= (kelvin - 400.0f) / 600.0f;
+    }
+    return max(color * brightnessScale, float3(0.0f));
+}
+
+inline float4 wxAccumulate(float4 baseColor, float4 emission) {
+    const float transmittance = max(1.0f - baseColor.a, 0.0f);
+    baseColor.rgb += emission.rgb * transmittance;
+    baseColor.a += emission.a * transmittance;
+    return baseColor;
+}
+
+inline float4 wxDiskAndJetEmission(
+    float4 baseColor,
+    float stepLength,
+    float4 rayPos,
+    float4 lastRayPos,
+    float3 rayDir,
+    float4 pCov,
+    float energy,
+    float physicalSpinA,
+    float physicalQ,
+    float thetaInShell,
+    float time
+) {
+    float3 samplePos = 0.5f * (rayPos.xyz + lastRayPos.xyz);
+    if (lastRayPos.y * rayPos.y < 0.0f) {
+        const float t = clamp(lastRayPos.y / max(lastRayPos.y - rayPos.y, 1e-8f), 0.0f, 1.0f);
+        samplePos = mix(lastRayPos.xyz, rayPos.xyz, t);
+    }
+
+    const float interRadius = 1.5f;
+    const float outerRadius = 25.0f;
+    const float thin = 0.75f;
+    const float hopper = 0.24f;
+    const float posR = wxKerrSchildRadius(samplePos, physicalSpinA, 1.0f);
+    const float rho = length(samplePos.xz);
+    const float posY = samplePos.y;
+    const float geometricThin = thin + max(0.0f, (rho - 3.0f) * hopper);
+
+    float4 result = baseColor;
+    if (posR > interRadius && posR < outerRadius) {
+        const float x = clamp((posR - interRadius) / max(outerRadius - interRadius, 1e-6f), 0.0f, 1.0f);
+        const float densityShape = pow(max(x, 1e-5f), 0.9f) * pow(max(1.0f - x, 1e-5f), 1.5f) * 4.35f;
+        const float thickness = max(geometricThin * densityShape, 1e-4f);
+        const float vertical = exp(-pow(posY / thickness, 2.0f));
+
+        if (vertical > 0.001f) {
+            const float angle = atan2(samplePos.z, samplePos.x);
+            const float logTheta = angle + 2.0f * log(max(posR, 1e-5f));
+            const float rotR = posR + 0.083333f * (2.0f * time);
+            const float turbulent = 0.42f + 1.20f * fbm2D(float2(0.14f * rotR - 0.035f * outerRadius * logTheta, 1.6f * logTheta + 0.03f * time));
+            const float granular = 0.78f + 0.28f * fbm2D(float2(0.35f * posR, 2.5f * angle + 0.12f * time));
+            const float omega = wxKeplerianAngularVelocity(max(posR, interRadius), physicalSpinA, physicalQ);
+            const float pPhi = -samplePos.x * pCov.z + samplePos.z * pCov.x;
+            const float invR = 1.0f / max(posR, 1e-6f);
+            const float vPotential = invR - physicalQ * physicalQ * invR * invR;
+            const float gTT = -(1.0f - vPotential);
+            const float gTPhi = -physicalSpinA * vPotential;
+            const float gPhiPhi = posR * posR + physicalSpinA * physicalSpinA + physicalSpinA * physicalSpinA * vPotential;
+            const float normMetric = gTT + 2.0f * omega * gTPhi + omega * omega * gPhiPhi;
+            const float uT = rsqrt(max(-normMetric, 0.01f));
+            const float freqRatio = clamp(1.0f / max(uT * (energy - omega * pPhi), 1e-5f), 0.05f, 3.0f);
+            const float temperature = pow(7.8e19f * pow(invR, 3.0f) * max(1.0f - sqrt(interRadius * invR), 1e-6f), 0.25f);
+            const float3 thermal = wxKelvinToRgb(temperature * pow(freqRatio, 3.0f));
+            const float photonBoost = 1.0f + 4.2f * clamp(0.3f * thetaInShell - 0.1f, 0.0f, 1.0f);
+
+            float4 emission;
+            emission.rgb = thermal * vertical * densityShape * turbulent * granular;
+            emission.rgb *= (0.055f + 0.55f * exp(-5.0f * x)) * pow(freqRatio, 4.0f) * photonBoost;
+            emission.rgb *= min(1.0f, 1.3f * (outerRadius - posR) / max(outerRadius - interRadius, 1e-6f));
+            emission.a = vertical * densityShape * densityShape * (0.05f + 0.16f * turbulent);
+            emission *= clamp(stepLength * 0.11f, 0.0f, 0.9f);
+            result = wxAccumulate(result, emission);
+        }
+    }
+
+    const float jetR = length(samplePos.xz);
+    const float jetAbsY = abs(samplePos.y);
+    if (jetAbsY > interRadius * 0.45f && jetAbsY < outerRadius * 1.65f) {
+        const float cone = interRadius + 0.18f * jetAbsY;
+        const float shell = exp(-pow((jetR - cone) / max(0.22f + 0.05f * jetAbsY, 1e-4f), 2.0f));
+        const float core = exp(-jetR * jetR / max(0.14f + 0.0015f * jetAbsY * jetAbsY, 1e-4f));
+        const float flow = 0.65f + 0.35f * fbm2D(float2(jetAbsY * 0.55f - time * 2.2f, atan2(samplePos.z, samplePos.x) * 2.0f));
+        const float fade = smoothstep(0.8f, 3.5f, jetAbsY) * (1.0f - smoothstep(34.0f, outerRadius * 1.65f, jetAbsY));
+        float4 emission = float4(float3(0.16f, 0.48f, 2.2f) * (0.85f * shell + 0.22f * core) * flow * fade, 0.0f);
+        emission.rgb *= clamp(stepLength * 0.08f, 0.0f, 0.55f);
+        result = wxAccumulate(result, emission);
+    }
+
+    return result;
+}
+
+inline float3 wxToneMap(float4 result, float shift) {
+    const float sum = max(result.r + result.g + result.b, 1e-6f);
+    const float3 factor = 3.0f * result.rgb / sum;
+    const float bloomMax = max(8.0f, shift);
+    const float3 safeColor = clamp(result.rgb, float3(0.0f), float3(0.995f));
+    return min(-4.0f * log(1.0f - pow(safeColor, float3(2.2f))), bloomMax * factor);
+}
+
+inline WxCameraState wxDefaultCameraState(constant FrameUniforms &uniforms) {
+    const float cameraYaw = uniforms.rotation * 0.5f;
+    const float cameraScale = clamp(uniforms.cameraDistance / 36.0f, 0.65f, 2.0f);
+    float3 pos = float3(-2.0f, -3.6f - uniforms.cameraPitch * 2.0f, 22.0f) * cameraScale;
+    const float cy = cos(cameraYaw);
+    const float sy = sin(cameraYaw);
+    pos = float3(pos.x * cy - pos.z * sy, pos.y, pos.x * sy + pos.z * cy);
+
+    const float3 target = float3(0.0f, 0.12f, 0.0f);
+    const float3 forward = normalize(target - pos);
+    const float3 right = normalize(cross(forward, float3(-0.5f, 1.0f, 0.0f)));
+    const float3 up = normalize(cross(right, forward));
+    return WxCameraState { pos, right, up, forward, 1.0f, true };
+}
+
+inline float4 wxReadStatePixel(texture2d<float, access::read> stateTexture, float2 resolution, int offset) {
+    const uint x = uint(clamp(resolution.x - float(offset), 0.0f, resolution.x - 1.0f));
+    return stateTexture.read(uint2(x, 0));
+}
+
+inline bool wxInputKeyDown(int keyMask, int bit) {
+    return (keyMask & (1 << bit)) != 0;
+}
+
+inline float3 wxRotateAroundAxis(float3 v, float3 axis, float angle) {
+    const float s = sin(angle);
+    const float c = cos(angle);
+    return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1.0f - c);
+}
+
+inline WxCameraState wxCameraStateFromBuffer(
+    texture2d<float, access::read> stateTexture,
+    constant FrameUniforms &uniforms
+) {
+    WxCameraState fallback = wxDefaultCameraState(uniforms);
+    const float2 resolution = max(uniforms.resolution, float2(1.0f));
+
+    const float4 upPixel = wxReadStatePixel(stateTexture, resolution, 1);
+    const float4 rightPixel = wxReadStatePixel(stateTexture, resolution, 2);
+    const float4 posPixel = wxReadStatePixel(stateTexture, resolution, 3);
+    const float4 fwdPixel = wxReadStatePixel(stateTexture, resolution, 4);
+    const float4 timePixel = wxReadStatePixel(stateTexture, resolution, 6);
+
+    const bool valid = length(upPixel.xyz) > 0.1f
+        && length(rightPixel.xyz) > 0.1f
+        && length(fwdPixel.xyz) > 0.1f
+        && length(posPixel.xyz) > 0.1f
+        && timePixel.w > 0.5f;
+
+    if (!valid) {
+        return fallback;
+    }
+
+    float3 forward = normalize(fwdPixel.xyz);
+    float3 right = normalize(rightPixel.xyz - dot(rightPixel.xyz, forward) * forward);
+    float3 up = normalize(cross(right, forward));
+    right = normalize(cross(forward, up));
+    return WxCameraState {
+        posPixel.xyz,
+        right,
+        up,
+        forward,
+        timePixel.y == 0.0f ? 1.0f : timePixel.y,
+        true
+    };
+}
+
+inline float3 renderShadertoyWxdfzjBase(float2 uv, constant FrameUniforms &uniforms, WxCameraState camera) {
     const float time = uniforms.time;
-    float2 p = uv * 0.86f;
-    const float co = cos(uniforms.rotation * 0.35f);
-    const float si = sin(uniforms.rotation * 0.35f);
-    p = float2(p.x * co - p.y * si, p.x * si + p.y * co);
+    const float physicalSpinA = 0.99f * 0.5f;
+    const float physicalQ = 0.0f;
+    const float horizonDiscrim = 0.25f - physicalSpinA * physicalSpinA - physicalQ * physicalQ;
+    const float eventHorizonR = 0.5f + sqrt(max(horizonDiscrim, 0.0f));
+    const float boundary = 501.0f;
 
-    float3 color = shadertoySourceStarField(p, time, float3(0.34f, 0.48f, 0.86f));
-    const float r = length(p);
-    const float angle = atan2(p.y, p.x);
-    const float spin = 0.99f;
+    const float3 ro = camera.position;
+    const float3 forward = normalize(camera.forward);
+    const float3 right = normalize(camera.right);
+    const float3 up = normalize(camera.up);
+    const float fov = tan(60.0f * 0.0174532925199f * 0.5f);
+    float3 rayDir = normalize(forward + fov * uv.x * right + fov * uv.y * up);
 
-    const float horizon = 0.235f;
-    const float photon = 0.335f + 0.018f * sin(angle + time * 0.12f);
-    const float frameDrag = spin * 0.16f * exp(-r * 4.0f);
-    const float lens = 0.16f / max(abs(p.x) + 0.13f, 0.13f);
-    const float diskY = p.y + 0.045f * sin(p.x * 4.0f + frameDrag * 7.0f) - sign(p.y + 0.0001f) * lens * exp(-abs(p.x) * 2.3f) * 0.20f;
-    const float diskRadius = abs(p.x);
-    const float diskMask = smoothstep(0.19f, 0.34f, diskRadius) * (1.0f - smoothstep(1.72f, 2.08f, diskRadius));
-    const float thickness = 0.026f + 0.040f * smoothstep(0.2f, 1.5f, diskRadius);
-    const float diskCore = exp(-pow(diskY / max(thickness, 0.001f), 2.0f)) * diskMask;
-    const float turbulentLane = 0.66f + 0.34f * sin(46.0f * log(max(diskRadius, 0.08f)) + angle * 2.4f - time * 2.0f);
-    const float granular = 0.78f + 0.22f * fbm2D(float2(angle * 3.0f, diskRadius * 9.0f) + time * 0.08f);
-    const float doppler = 0.54f + 1.42f * smoothstep(-0.92f, 0.95f, -p.x + 0.12f * p.y);
-    const float innerHeat = exp(-diskRadius * 1.55f);
-    const float3 coldBlue = float3(0.20f, 0.42f, 1.35f);
-    const float3 hotBlue = float3(1.10f, 1.38f, 1.75f);
-    const float3 diskColor = mix(coldBlue, hotBlue, innerHeat) * diskCore * turbulentLane * granular * doppler * 4.8f;
-    color += diskColor;
+    float currentSign = camera.universeSign == 0.0f ? 1.0f : camera.universeSign;
+    float4 x = float4(ro, 0.0f);
+    float4 pCov = wxInitialMomentum(rayDir, x, physicalSpinA, physicalQ, 1.0f, currentSign);
+    const float energy = max(-pCov.w, 1e-5f);
+    float4 result = float4(0.0f);
+    float minR = 1e6f;
+    float lastR = wxKerrSchildRadius(x.xyz, physicalSpinA, currentSign);
+    float thetaInShell = 0.0f;
+    bool escaped = false;
+    bool absorbed = false;
+    const int raySteps = clamp(uniforms.rayMarchSteps, 96, 192);
 
-    const float ring = exp(-pow((r - photon) / 0.012f, 2.0f));
-    const float ringGlow = exp(-pow((r - photon * 1.08f) / 0.055f, 2.0f));
-    const float ringAsym = 0.70f + 0.65f * saturate(cos(angle - 0.25f) * spin);
-    color += ring * ringAsym * float3(6.8f, 8.2f, 10.5f);
-    color += ringGlow * float3(0.45f, 0.74f, 1.55f);
+    for (int i = 0; i < 192; i++) {
+        if (i >= raySteps || result.a > 0.99f) {
+            break;
+        }
 
-    const float jetX = abs(p.x + 0.035f * sin(p.y * 7.0f + time));
-    const float jet = exp(-pow(jetX / (0.025f + abs(p.y) * 0.055f), 2.0f))
-        * smoothstep(0.28f, 0.62f, abs(p.y))
-        * (1.0f - smoothstep(1.55f, 2.1f, abs(p.y)));
-    color += jet * float3(0.20f, 0.62f, 2.8f) * (0.72f + 0.28f * sin(abs(p.y) * 18.0f - time * 2.0f));
+        float distanceToBlackHole = length(x.xyz);
+        if (distanceToBlackHole > boundary && i > 2) {
+            escaped = true;
+            break;
+        }
 
-    const float shadow = 1.0f - smoothstep(horizon, horizon + 0.018f, r);
-    color = mix(color, float3(0.0f), shadow);
-    color *= 1.0f - 0.34f * exp(-pow((r - horizon * 1.22f) / 0.065f, 2.0f));
+        WxKerrGeometry geo = wxComputeGeometryScalars(x.xyz, physicalSpinA, physicalQ, 1.0f, currentSign);
+        minR = min(minR, abs(geo.r));
+        if (currentSign > 0.0f && geo.r < eventHorizonR) {
+            absorbed = true;
+            break;
+        }
+
+        WxState s = WxState { x, pCov };
+        WxState k1 = wxDerivatives(s, physicalSpinA, physicalQ, 1.0f, geo);
+        const float rho = length(x.xz);
+        const float distRing = sqrt(x.y * x.y + pow(rho - abs(physicalSpinA), 2.0f));
+        const float velMag = max(length(k1.x), 1e-7f);
+        const float forceMag = max(length(k1.p), 1e-12f);
+        const float momMag = max(length(pCov), 1e-6f);
+        float dLambda = 0.45f * min(distRing / velMag, momMag / forceMag);
+        dLambda = clamp(dLambda, 0.004f, distanceToBlackHole > 80.0f ? 6.0f : 1.15f);
+
+        const float4 lastX = x;
+        const float3 lastPos = x.xyz;
+        wxStepGeodesicRK4(x, pCov, energy, -dLambda, physicalSpinA, physicalQ, 1.0f, currentSign, geo, k1);
+
+        const float3 stepVec = x.xyz - lastPos;
+        const float actualStepLength = length(stepVec);
+        if (actualStepLength > 1e-7f) {
+            rayDir = stepVec / actualStepLength;
+        }
+
+        if (lastPos.y * x.y < 0.0f) {
+            const float tCross = lastPos.y / max(lastPos.y - x.y, 1e-8f);
+            const float rhoCross = length(mix(lastPos.xz, x.xz, tCross));
+            if (rhoCross < abs(physicalSpinA)) {
+                currentSign *= -1.0f;
+            }
+        }
+
+        const float dr = geo.r - lastR;
+        const float drdl = dr / max(actualStepLength, 1e-8f);
+        const float rotFact = clamp(1.0f + 0.75f * dot(-stepVec, float3(x.z, 0.0f, -x.x)) / max(actualStepLength * length(x.xz), 1e-8f) * 0.99f, 0.0f, 1.0f);
+        if (geo.r < 1.6f + pow(abs(0.99f), 0.666666f)) {
+            thetaInShell += actualStepLength / max(0.5f * lastR + 0.5f * geo.r, 1e-5f) / (1.0f + 1000.0f * drdl * drdl) * rotFact;
+        }
+        lastR = geo.r;
+
+        if (currentSign > 0.0f) {
+            result = wxDiskAndJetEmission(result, actualStepLength, x, lastX, rayDir, pCov, energy, physicalSpinA, physicalQ, thetaInShell, time);
+        }
+    }
+
+    if (!absorbed) {
+        WxKerrGeometry geo = wxComputeGeometryScalars(x.xyz, physicalSpinA, physicalQ, 1.0f, currentSign);
+        const float4 pContra = wxRaiseIndex(pCov, geo);
+        const float3 escapeDir = escaped ? normalize(pContra.xyz) : rayDir;
+        float3 background = blackHoleStarField(escapeDir, float3(0.004f, 0.006f, 0.014f)) * 1.9f;
+        const float shift = clamp(1.0f / sqrt(max(1.0f - 1.0f / max(abs(geo.r), 1.01f), 0.02f)), 0.6f, 2.0f);
+        background *= pow(shift, 1.7f);
+        result.rgb += background * pow(max(1.0f - result.a, 0.0f), 1.0f);
+    }
+
+    float3 color = wxToneMap(result, 1.0f);
+    const float photonRing = exp(-pow((minR - 1.48f) / 0.045f, 2.0f));
+    color += photonRing * float3(1.6f, 2.7f, 5.2f) * (absorbed ? 1.25f : 0.55f);
+    if (absorbed && result.a < 0.2f) {
+        color *= 0.025f;
+    }
     return max(color, float3(0.0f));
 }
 
-inline float3 renderShadertoyW3BBzKBase(float2 uv, constant FrameUniforms &uniforms) {
+inline float w3RandomStep(float2 input, float seed) {
+    return fract(sin(dot(input + fract(11.4514f * sin(seed)), float2(12.9898f, 78.233f))) * 43758.5453f);
+}
+
+inline float w3CubicInterpolate(float x) {
+    return x * x * (3.0f - 2.0f * x);
+}
+
+inline float w3PerlinNoise(float3 position) {
+    const float3 pi = floor(position);
+    const float3 pf = fract(position);
+    const float3 u = pf * pf * (3.0f - 2.0f * pf);
+
+    const float v000 = 2.0f * fract(sin(dot(pi + float3(0.0f, 0.0f, 0.0f), float3(12.9898f, 78.233f, 213.765f))) * 43758.5453f) - 1.0f;
+    const float v100 = 2.0f * fract(sin(dot(pi + float3(1.0f, 0.0f, 0.0f), float3(12.9898f, 78.233f, 213.765f))) * 43758.5453f) - 1.0f;
+    const float v010 = 2.0f * fract(sin(dot(pi + float3(0.0f, 1.0f, 0.0f), float3(12.9898f, 78.233f, 213.765f))) * 43758.5453f) - 1.0f;
+    const float v110 = 2.0f * fract(sin(dot(pi + float3(1.0f, 1.0f, 0.0f), float3(12.9898f, 78.233f, 213.765f))) * 43758.5453f) - 1.0f;
+    const float v001 = 2.0f * fract(sin(dot(pi + float3(0.0f, 0.0f, 1.0f), float3(12.9898f, 78.233f, 213.765f))) * 43758.5453f) - 1.0f;
+    const float v101 = 2.0f * fract(sin(dot(pi + float3(1.0f, 0.0f, 1.0f), float3(12.9898f, 78.233f, 213.765f))) * 43758.5453f) - 1.0f;
+    const float v011 = 2.0f * fract(sin(dot(pi + float3(0.0f, 1.0f, 1.0f), float3(12.9898f, 78.233f, 213.765f))) * 43758.5453f) - 1.0f;
+    const float v111 = 2.0f * fract(sin(dot(pi + float3(1.0f, 1.0f, 1.0f), float3(12.9898f, 78.233f, 213.765f))) * 43758.5453f) - 1.0f;
+
+    const float x00 = mix(v000, v100, u.x);
+    const float x10 = mix(v010, v110, u.x);
+    const float x01 = mix(v001, v101, u.x);
+    const float x11 = mix(v011, v111, u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
+}
+
+inline float w3PerlinNoise1D(float position) {
+    const float pi = floor(position);
+    const float pf = fract(position);
+    const float v0 = 2.0f * fract(sin(pi * 12.9898f) * 43758.5453f) - 1.0f;
+    const float v1 = 2.0f * fract(sin((pi + 1.0f) * 12.9898f) * 43758.5453f) - 1.0f;
+    return mix(v0, v1, w3CubicInterpolate(pf));
+}
+
+inline float w3SoftSaturate(float x) {
+    return 1.0f - 1.0f / (max(x, 0.0f) + 1.0f);
+}
+
+inline float w3AccretionDiskNoise(float3 position, float noiseStartLevel, float noiseEndLevel, float contrastLevel) {
+    float accumulator = 10.0f;
+    const int iStart = int(floor(noiseStartLevel));
+    const int iEnd = int(ceil(noiseEndLevel));
+
+    for (int i = -2; i <= 10; i++) {
+        if (i < iStart || i >= iEnd) {
+            continue;
+        }
+
+        const float fi = float(i);
+        const float w = max(0.0f, min(noiseEndLevel, fi + 1.0f) - max(noiseStartLevel, fi));
+        const float frequency = pow(3.0f, fi);
+        accumulator *= 1.0f + 0.1f * w3PerlinNoise(position * frequency) * w;
+    }
+
+    return log(1.0f + pow(max(0.0f, 0.1f * accumulator), contrastLevel));
+}
+
+inline float w3Vec2ToTheta(float2 v1, float2 v2) {
+    const float denom = max(length(v1) * length(v2), 1e-7f);
+    const float s = clamp((v1.x * v2.y - v1.y * v2.x) / denom, -0.999999f, 0.999999f);
+    const float c = dot(v1, v2);
+    if (c > 0.0f) {
+        return asin(s);
+    }
+    return s >= 0.0f ? 3.141592653589f - asin(s) : -3.141592653589f - asin(s);
+}
+
+inline float w3Shape(float x, float alpha, float beta) {
+    const float sx = saturate(x);
+    const float k = pow(alpha + beta, alpha + beta) / max(pow(alpha, alpha) * pow(beta, beta), 1e-6f);
+    return k * pow(max(sx, 1e-5f), alpha) * pow(max(1.0f - sx, 1e-5f), beta);
+}
+
+inline float3 w3KelvinToRgb(float kelvin) {
+    if (kelvin < 400.01f) {
+        return float3(0.0f);
+    }
+
+    const float t = (kelvin - 6500.0f) / (6500.0f * kelvin * 2.2f);
+    float3 color = float3(
+        exp(2.05539304e4f * t),
+        exp(2.63463675e4f * t),
+        exp(3.30145739e4f * t)
+    );
+    float brightnessScale = 1.0f / max(max(1.5f * color.r, color.g), color.b);
+    if (kelvin < 1000.0f) {
+        brightnessScale *= (kelvin - 400.0f) / 600.0f;
+    }
+    return max(color * brightnessScale, float3(0.0f));
+}
+
+inline float3 w3WavelengthToRgb(float wavelength) {
+    float3 color = float3(0.0f);
+    if (wavelength < 380.0f || wavelength > 750.0f) {
+        return color;
+    }
+
+    if (wavelength < 440.0f) {
+        color = float3(-(wavelength - 440.0f) / 60.0f, 0.0f, 1.0f);
+    } else if (wavelength < 490.0f) {
+        color = float3(0.0f, (wavelength - 440.0f) / 50.0f, 1.0f);
+    } else if (wavelength < 510.0f) {
+        color = float3(0.0f, 1.0f, -(wavelength - 510.0f) / 20.0f);
+    } else if (wavelength < 580.0f) {
+        color = float3((wavelength - 510.0f) / 70.0f, 1.0f, 0.0f);
+    } else if (wavelength < 645.0f) {
+        color = float3(1.0f, -(wavelength - 645.0f) / 65.0f, 0.0f);
+    } else {
+        color = float3(1.0f, 0.0f, 0.0f);
+    }
+
+    const float factor = wavelength < 420.0f ? 0.3f + 0.7f * (wavelength - 380.0f) / 40.0f
+        : (wavelength < 645.0f ? 1.0f : 0.3f + 0.7f * (750.0f - wavelength) / 105.0f);
+    const float luminance = max(sqrt(color.r * color.r + 2.25f * color.g * color.g + 0.36f * color.b * color.b), 1e-5f);
+    return color * factor / luminance * (0.1f * (color.r + color.g + color.b) + 0.9f);
+}
+
+inline float w3KeplerianAngularVelocity(float radius, float rs) {
+    const float cOverLy = 299792458.0f / 9460730472580800.0f;
+    return sqrt(cOverLy * 299792458.0f * rs / max((2.0f * radius - 3.0f * rs) * radius * radius, 1e-20f));
+}
+
+inline float3 w3DiskLocal(float3 p, float3 diskNormal, float3 diskTangent) {
+    const float3 y = normalize(diskNormal);
+    const float3 x = normalize(diskTangent);
+    const float3 z = normalize(cross(x, y));
+    return float3(dot(p, x), dot(p, y), dot(p, z));
+}
+
+inline float4 w3AccumulateEmission(float4 baseColor, float4 emission) {
+    const float transmittance = pow(max(1.0f - baseColor.a, 0.0f), 1.0f);
+    baseColor.rgb += emission.rgb * transmittance;
+    baseColor.a += emission.a * transmittance;
+    return baseColor;
+}
+
+inline float4 w3DiskColor(
+    float4 baseColor,
+    float stepLength,
+    float3 rayPos,
+    float3 lastRayPos,
+    float3 rayDir,
+    float3 diskNormal,
+    float3 diskTangent,
+    float rs,
+    float interRadius,
+    float outerRadius,
+    float thin,
+    float hopper,
+    float diskArgument,
+    float peakTemperature,
+    float time
+) {
+    const float3 posDisk = w3DiskLocal(rayPos, diskNormal, diskTangent);
+    const float3 lastDisk = w3DiskLocal(lastRayPos, diskNormal, diskTangent);
+    const float3 dirDisk = normalize(w3DiskLocal(rayDir, diskNormal, diskTangent));
+
+    float3 samplePos = posDisk;
+    if (lastDisk.y * posDisk.y < 0.0f) {
+        const float t = saturate(lastDisk.y / max(lastDisk.y - posDisk.y, 1e-7f));
+        samplePos = mix(lastDisk, posDisk, t);
+    }
+
+    float posR = length(samplePos.xz);
+    float posY = samplePos.y;
+    float geometricThin = thin + max(0.0f, (posR - 3.0f * rs) * hopper);
+    const float interCloudRadius = (posR - interRadius) / max(min(outerRadius - interRadius, 12.0f * rs), 1e-9f);
+    const float innerCloudBound = geometricThin * (1.0f - 5.0f * interCloudRadius * interCloudRadius);
+
+    if (posR <= interRadius || posR >= outerRadius || abs(posY) > max(geometricThin * 1.5f, innerCloudBound)) {
+        return baseColor;
+    }
+
+    const float x = saturate((posR - interRadius) / max(outerRadius - interRadius, 1e-9f));
+    const float a = max(1.0f, (outerRadius - interRadius) / (10.0f * rs));
+    const float effectiveRadius = a == 1.0f ? x : (-1.0f + sqrt(max(1.0f + 4.0f * a * a * x - 4.0f * x * a, 0.0f))) / max(2.0f * a - 2.0f, 1e-6f);
+    const float densityShape = w3Shape(effectiveRadius, 0.9f, 1.5f);
+    const float frac = max(0.0f, 2.0f - 0.6f * geometricThin / rs);
+
+    if (abs(posY) > geometricThin * densityShape && posY > innerCloudBound) {
+        return baseColor;
+    }
+
+    const float angularVelocity = w3KeplerianAngularVelocity(max(posR, interRadius), rs);
+    const float halfPiTimeInside = 3.141592653589f / w3KeplerianAngularVelocity(3.0f * rs, rs);
+    const float innerTheta = 3.141592653589f / halfPiTimeInside * time * 30000.0f;
+    const float spiralTheta = 12.0f * 2.0f / sqrt(3.0f) * atan(sqrt(max(0.6666666f * (posR / rs) - 1.0f, 0.0f)));
+    const float posTheta = w3Vec2ToTheta(samplePos.zx, float2(cos(-spiralTheta), sin(-spiralTheta)));
+    const float posLogTheta = w3Vec2ToTheta(samplePos.zx, float2(cos(-2.0f * log(max(posR / rs, 1.001f))), sin(-2.0f * log(max(posR / rs, 1.001f)))));
+    const float rotPosR = posR / rs + 0.3f * sqrt(3.0f) * 299792458.0f / 9460730472580800.0f / 3.0f / sqrt(3.0f) / rs * 30000.0f * time;
+
+    const float levelMut = 0.91f * log(1.0f + 0.06f / 0.91f * max(0.0f, min(1000.0f, posR / rs) - 10.0f));
+    const float contrastMut = 80.0f * log(1.0f + 0.006f * max(0.0f, min(1000000.0f, posR / rs) - 10.0f));
+    float cloud = w3AccretionDiskNoise(float3(0.1f * rotPosR, 0.1f * posY / rs, 0.02f * pow(max(outerRadius / rs, 1.0f), 0.7f) * posTheta), frac + 2.0f - levelMut, frac + 4.0f - levelMut, max(1.0f, 80.0f - contrastMut));
+
+    if (posR > max(0.15379f * outerRadius, 0.15379f * 64.0f * rs)) {
+        const float timeShiftedRadius = posR - 0.1f * sqrt(3.0f) * 299792458.0f / 9460730472580800.0f / 3.0f / sqrt(3.0f) / rs * 30000.0f * time;
+        const float spiral = w3AccretionDiskNoise(float3(0.1f * (timeShiftedRadius - 0.08f * outerRadius / rs * posLogTheta), 0.1f * posY / rs, 0.02f * pow(max(outerRadius / rs, 1.0f), 0.7f) * posLogTheta), frac + 2.0f - levelMut, frac + 3.0f - levelMut, max(1.0f, 80.0f - contrastMut));
+        cloud *= mix(1.0f, clamp(1.05f * spiral - 0.5f, 0.0f, 3.0f), 0.5f + 0.5f * max(-1.0f, 1.0f - exp(-0.15f * (100.0f * posR / max(outerRadius, 64.0f * rs) - 20.0f))));
+    }
+
+    const float thickNoise = w3AccretionDiskNoise(float3(1.5f * posTheta, rotPosR, 1.0f), -0.7f + frac, 1.3f + frac, 80.0f);
+    const float thick = max(geometricThin * densityShape * (0.4f + 0.6f * clamp(geometricThin / rs - 0.5f, 0.0f, 2.5f) / 2.5f + 0.6f * w3SoftSaturate(thickNoise)), 1e-8f);
+    const float vertical = max(0.0f, 1.0f - abs(posY) / thick);
+    const float density = densityShape * densityShape * vertical;
+
+    float dust = 0.0f;
+    if (abs(posY) < innerCloudBound) {
+        const float innerCloudTheta = w3Vec2ToTheta(samplePos.zx, float2(cos(0.666666f * innerTheta), sin(0.666666f * innerTheta)));
+        dust = max(1.0f - pow(posY / max(innerCloudBound, 1e-7f), 2.0f), 0.0f)
+            * w3AccretionDiskNoise(float3(1.5f * fract((1.5f * innerCloudTheta + innerTheta) / (2.0f * 3.141592653589f)) * 2.0f * 3.141592653589f, posR / rs, posY / rs), 0.0f, 6.0f, 80.0f);
+    }
+
+    const float diskTemperature = pow(diskArgument * pow(rs / max(posR, 1e-9f), 3.0f) * max(1.0f - sqrt(interRadius / max(posR, 1e-9f)), 0.000001f), 0.25f);
+    const float3 cloudVelocity = 9460730472580800.0f / 299792458.0f * angularVelocity * cross(float3(0.0f, 1.0f, 0.0f), samplePos);
+    const float relativeVelocity = clamp(dot(-dirDisk, cloudVelocity), -0.95f, 0.95f);
+    const float doppler = sqrt((1.0f + relativeVelocity) / max(1.0f - relativeVelocity, 1e-4f));
+    const float redShift = doppler * sqrt(max(1.0f - rs / max(posR, 1e-9f), 0.000001f)) / sqrt(max(1.0f - rs / (36.0f * rs), 0.000001f));
+    const float brightness = (0.05f * min(outerRadius / (1000.0f * rs), 1000.0f * rs / outerRadius) + 0.55f / exp(5.0f * effectiveRadius))
+        * pow(max(diskTemperature / max(peakTemperature, 1.0f), 0.0f), 0.5f);
+    const float3 thermal = w3KelvinToRgb(diskTemperature * pow(max(redShift, 0.05f), 3.0f));
+
+    float4 emission = float4(0.0f);
+    emission.rgb = (cloud * density * 1.4f + 0.02f * dust) * thermal * brightness * min(pow(max(redShift, 0.0f), 4.0f), 1.25f);
+    emission.rgb *= min(1.0f, 1.8f * (outerRadius - posR) / max(outerRadius - interRadius, 1e-9f)) * 0.92f;
+    emission.a = (cloud * density * density / 0.3f + 0.2f * dust) * 0.25f;
+    emission *= stepLength / rs;
+    return w3AccumulateEmission(baseColor, emission);
+}
+
+inline float4 w3JetColor(
+    float4 baseColor,
+    float stepLength,
+    float3 rayPos,
+    float3 rayDir,
+    float3 diskNormal,
+    float3 diskTangent,
+    float rs,
+    float interRadius,
+    float outerRadius,
+    float time
+) {
+    const float3 posDisk = w3DiskLocal(rayPos, diskNormal, diskTangent);
+    const float3 dirDisk = normalize(w3DiskLocal(rayDir, diskNormal, diskTangent));
+    const float rho = length(posDisk.xz);
+    const float posR = max(length(posDisk), 1e-6f);
+    const float posY = posDisk.y;
+    float intensity = 0.0f;
+
+    if (rho * rho < 2.0f * interRadius * interRadius + 0.03f * 0.03f * posY * posY && posR < sqrt(2.0f) * outerRadius) {
+        const float shape = 1.0f / sqrt(max(interRadius * interRadius + 0.02f * 0.02f * posY * posY, 1e-9f));
+        const float flow = 0.7f + 0.3f * w3PerlinNoise1D(0.3f * (30000.0f * time - 9460730472580800.0f / 0.8f / 299792458.0f * abs(posY)) / max(outerRadius / 100.0f, 1e-7f));
+        intensity += flow * max(0.0f, 1.0f - 5.0f * rs * shape * abs(1.0f - pow(rho * shape, 2.0f))) * rs * shape;
+        intensity *= max(0.0f, 1.0f - exp(-0.0001f * posY * posY / max(interRadius * interRadius, 1e-10f)));
+        intensity *= exp(-2.0f * posR * posR / max(outerRadius * outerRadius, 1e-10f));
+    }
+
+    const float wid = abs(posY);
+    if (rho < 1.3f * interRadius + 0.25f * wid && rho > 0.7f * interRadius + 0.15f * wid && posR < 30.0f * interRadius) {
+        const float shape = 1.0f / max(interRadius + 0.2f * wid, 1e-9f);
+        intensity += 0.5f * max(0.0f, 1.0f - 2.0f * abs(1.0f - pow(rho * shape, 2.0f))) * rs * shape
+            * (1.0f - exp(-posY * posY / max(interRadius * interRadius, 1e-10f)))
+            * exp(-0.005f * posY * posY / max(interRadius * interRadius, 1e-10f));
+    }
+
+    if (intensity <= 0.0f) {
+        return baseColor;
+    }
+
+    const float relativeVelocity = clamp(-dirDisk.y * sqrt(rs / max(posR, rs)) * sign(posY), -0.92f, 0.92f);
+    const float doppler = sqrt((1.0f + relativeVelocity) / max(1.0f - relativeVelocity, 1e-4f));
+    const float redShift = doppler * sqrt(max(1.0f - rs / max(posR, 1e-9f), 0.000001f));
+    float4 emission = float4(w3KelvinToRgb(100000.0f) * intensity * min(pow(max(redShift, 0.0f), 2.0f), 3.0f), 0.0f);
+    emission.rgb *= stepLength / rs * 0.55f;
+    return w3AccumulateEmission(baseColor, emission);
+}
+
+inline float3 renderW3BBzKBufferA(float2 uv, constant FrameUniforms &uniforms) {
     const float time = uniforms.time;
-    float2 p = uv * 0.82f;
-    const float co = cos(uniforms.rotation * 0.18f);
-    const float si = sin(uniforms.rotation * 0.18f);
-    p = float2(p.x * co - p.y * si, p.x * si + p.y * co);
+    const float rs = 4.67e-6f;
+    const float interRadius = 2.1f * rs;
+    const float outerRadius = (57.0f + 45.0f * cos(0.5f * time)) * rs;
+    const float thin = (2.25f + 1.75f * cos(0.21f * time)) * rs;
+    const float hopper = 0.375f * (1.0f - cos(0.6f * time));
+    const float diskArgument = 1.7e26f * pow(10.0f, -6.0f + 3.5f + 3.5f * cos(0.7f * time));
+    const float peakTemperature = pow(max(diskArgument * 0.05665278f * pow(rs / interRadius, 3.0f), 1.0f), 0.25f);
 
-    float3 color = shadertoySourceStarField(p, time, float3(0.90f, 0.78f, 0.55f));
-    const float r = length(p);
-    const float angle = atan2(p.y, p.x);
+    const float3 diskNormal = normalize(float3(0.4f, 1.0f, -0.4f));
+    const float3 diskTangent = normalize(float3(1.0f, -0.4f, 0.0f));
 
-    const float horizon = 0.265f;
-    const float photon = 0.365f;
-    const float lensBend = 0.19f / max(abs(p.x) + 0.18f, 0.18f);
-    const float diskY = p.y - sign(p.y + 0.0001f) * lensBend * exp(-abs(p.x) * 2.2f) * 0.26f;
-    const float diskRadius = abs(p.x);
-    const float diskMask = smoothstep(0.22f, 0.38f, diskRadius) * (1.0f - smoothstep(1.88f, 2.26f, diskRadius));
-    const float thickness = 0.033f + 0.050f * smoothstep(0.2f, 1.7f, diskRadius);
-    const float diskCore = exp(-pow(diskY / max(thickness, 0.001f), 2.0f)) * diskMask;
-    const float rings = 0.58f + 0.42f * sin(58.0f * log(max(diskRadius, 0.075f)) + angle * 1.7f - time * 1.35f);
-    const float turbulence = 0.80f + 0.20f * fbm2D(float2(angle * 2.4f, diskRadius * 8.5f) + time * 0.055f);
-    const float doppler = 0.62f + 1.15f * smoothstep(-0.9f, 0.9f, p.x - 0.08f * p.y);
-    const float heat = exp(-diskRadius * 1.35f);
-    const float3 red = float3(1.35f, 0.18f, 0.045f);
-    const float3 gold = float3(1.45f, 0.78f, 0.24f);
-    const float3 white = float3(1.7f, 1.42f, 0.95f);
-    const float3 diskColor = mix(mix(red, gold, heat), white, heat * heat) * diskCore * rings * turbulence * doppler * 5.6f;
-    color += diskColor;
+    const float2 mouseNorm = uniforms.shadertoyMouse.xy / max(uniforms.resolution, float2(1.0f));
+    const bool hasMouse = mouseNorm.x > 0.01f || mouseNorm.y > 0.01f;
+    const float theta = hasMouse ? 4.0f * 3.141592653589f * clamp(mouseNorm.x, 0.0f, 1.0f) : 4.0f * 3.141592653589f * 0.15f;
+    const float phi = hasMouse ? 0.999f * 3.141592653589f * clamp(mouseNorm.y, 0.0f, 1.0f) + 0.0005f : 0.999f * 3.141592653589f * 0.5f + 0.0005f;
+    float cameraDistance = 0.000207f;
+    if (wxInputKeyDown(uniforms.shadertoyKeyMask, 2)) {
+        cameraDistance = 0.000807f;
+    }
+    if (wxInputKeyDown(uniforms.shadertoyKeyMask, 0)) {
+        cameraDistance = 0.0000186f;
+    }
+    const float3 ro = float3(
+        cameraDistance * sin(phi) * cos(theta),
+        -cameraDistance * cos(phi),
+        -cameraDistance * sin(phi) * sin(theta)
+    );
+    const float3 target = float3(0.0f, 0.0f, 0.0f);
+    const float3 forward = normalize(target - ro);
+    const float3 right = normalize(cross(float3(0.0f, 1.0f, 0.0f), forward));
+    const float3 up = cross(forward, right);
+    float3 rayDir = normalize(0.5f * uv.x * right + 0.5f * uv.y * up + forward);
 
-    const float primary = exp(-pow((r - photon) / 0.014f, 2.0f));
-    const float secondary = exp(-pow((r - photon * 1.33f) / 0.026f, 2.0f));
-    const float tertiary = exp(-pow((r - photon * 1.72f) / 0.044f, 2.0f));
-    const float broad = exp(-pow((r - photon * 1.09f) / 0.074f, 2.0f));
-    const float asym = 0.74f + 0.55f * saturate(cos(angle + 0.15f));
-    color += primary * asym * float3(8.0f, 4.0f, 1.15f);
-    color += secondary * float3(3.0f, 1.55f, 0.56f);
-    color += tertiary * float3(1.1f, 0.52f, 0.18f);
-    color += broad * float3(0.85f, 0.35f, 0.12f);
+    float3 rayPos = ro;
+    float3 lastRayPos = rayPos;
+    float3 lastRayDir = rayDir;
+    float lastR = length(rayPos);
+    float4 result = float4(0.0f);
+    float stepLength = 0.0f;
+    const int raySteps = clamp(uniforms.rayMarchSteps, 96, 192);
 
-    const float shadow = 1.0f - smoothstep(horizon, horizon + 0.020f, r);
-    color = mix(color, float3(0.0f), shadow);
-    color *= 1.0f - 0.42f * exp(-pow((r - horizon * 1.18f) / 0.075f, 2.0f));
-    return max(color, float3(0.0f));
+    for (int i = 0; i < 192; i++) {
+        if (i >= raySteps) {
+            break;
+        }
+
+        const float distanceToBlackHole = max(length(rayPos), 1e-8f);
+        const float3 normalToBlackHole = rayPos / distanceToBlackHole;
+        if (distanceToBlackHole < 0.11f * rs || result.a > 0.99f) {
+            break;
+        }
+
+        result = w3DiskColor(result, max(stepLength, 0.12f * rs), rayPos, lastRayPos, rayDir, diskNormal, diskTangent, rs, interRadius, outerRadius, thin, hopper, diskArgument, peakTemperature, time);
+        result = w3JetColor(result, max(stepLength, 0.12f * rs), rayPos, rayDir, diskNormal, diskTangent, rs, interRadius, outerRadius, time);
+
+        if (distanceToBlackHole > 2.5f * outerRadius && distanceToBlackHole > lastR && i > 48) {
+            const float backgroundShift = min(1.0f / sqrt(max(1.0f - rs / max(distanceToBlackHole, 1.001f * rs) + 0.005f, 1e-5f)), 2.0f);
+            float3 background = blackHoleStarField(rayDir, float3(0.006f, 0.005f, 0.004f)) * 1.8f;
+            if (distanceToBlackHole < 200.0f * rs) {
+                const float3 shifted = background.r * w3WavelengthToRgb(max(453.0f, 645.0f / backgroundShift))
+                    + background.g * 1.5f * w3WavelengthToRgb(max(416.0f, 510.0f / backgroundShift))
+                    + background.b * 0.6f * w3WavelengthToRgb(max(380.0f, 440.0f / backgroundShift));
+                background = shifted * pow(backgroundShift, 4.0f);
+            }
+            result.rgb += 0.2f * background * pow(max(1.0f - result.a, 0.0f), 1.0f);
+            break;
+        }
+
+        lastRayPos = rayPos;
+        lastRayDir = rayDir;
+        lastR = distanceToBlackHole;
+
+        const float cosTheta = max(length(cross(normalToBlackHole, rayDir)), 1e-4f);
+        const float deltaPhiRate = -cosTheta * cosTheta * cosTheta * (1.5f * rs / distanceToBlackHole);
+        float rayStep = i == 0 ? w3RandomStep(uv, fract(time)) : 1.0f;
+        rayStep *= 0.15f + 0.25f * min(max(0.0f, 0.5f * (0.5f * distanceToBlackHole / max(10.0f * rs, outerRadius) - 1.0f)), 1.0f);
+
+        if (distanceToBlackHole >= 2.0f * outerRadius) {
+            rayStep *= distanceToBlackHole;
+        } else if (distanceToBlackHole >= outerRadius) {
+            rayStep *= ((rs + 0.25f * max(distanceToBlackHole - 12.0f * rs, 0.0f)) * (2.0f * outerRadius - distanceToBlackHole)
+                + distanceToBlackHole * (distanceToBlackHole - outerRadius)) / outerRadius;
+        } else {
+            rayStep *= min(rs + 0.25f * max(distanceToBlackHole - 12.0f * rs, 0.0f), distanceToBlackHole);
+        }
+
+        const float deltaPhi = rayStep / distanceToBlackHole * deltaPhiRate;
+        rayDir = normalize(rayDir + (deltaPhi + deltaPhi * deltaPhi * deltaPhi / 3.0f) * cross(cross(rayDir, normalToBlackHole), rayDir) / cosTheta);
+        rayPos += rayDir * rayStep;
+        stepLength = rayStep;
+    }
+
+    const float sum = result.r + result.g + result.b;
+    if (sum > 1e-5f) {
+        const float3 colorFactor = 3.0f * result.rgb / sum;
+        const float3 safeColor = clamp(result.rgb, float3(0.0f), float3(0.995f));
+        result.rgb = min(-4.0f * log(1.0f - pow(safeColor, float3(2.2f))), 12.0f * colorFactor);
+    }
+    return max(result.rgb, float3(0.0f));
+}
+
+inline float3 renderShadertoyW3BBzKBase(float2 uv, constant FrameUniforms &uniforms) {
+    return renderW3BBzKBufferA(uv, uniforms);
 }
 
 inline float3 sampleChannel(texture2d<float, access::sample> sourceTexture, sampler linearSampler, float2 uv) {
@@ -1819,6 +2667,252 @@ inline float3 composeBlackHoleMultipass(
     return pow(max(color, float3(0.0f)), float3(0.7f / 2.2f));
 }
 
+inline float2 shadertoyBloomCalcOffset(float octave, float2 resolution) {
+    const float2 padding = float2(10.0f) / max(resolution, float2(1.0f));
+    float2 offset = float2(0.0f);
+    offset.x = -min(1.0f, floor(octave / 3.0f)) * (0.25f + padding.x);
+    offset.y = -(1.0f - (1.0f / exp2(octave))) - padding.y * octave;
+    offset.y += min(1.0f, floor(octave / 3.0f)) * 0.35f;
+    return offset;
+}
+
+inline float3 shadertoyBloomGrabMip(
+    texture2d<float, access::sample> sourceTexture,
+    sampler linearSampler,
+    float2 coord,
+    float octave,
+    float2 offset,
+    int oversampling,
+    float2 resolution
+) {
+    const float scale = exp2(octave);
+    coord = (coord + offset) * scale;
+
+    if (coord.x < 0.0f || coord.x > 1.0f || coord.y < 0.0f || coord.y > 1.0f) {
+        return float3(0.0f);
+    }
+
+    float3 color = float3(0.0f);
+    float weight = 0.0f;
+    const int samples = clamp(oversampling, 1, 16);
+
+    for (int y = 0; y < 16; y++) {
+        if (y >= samples) {
+            break;
+        }
+        for (int x = 0; x < 16; x++) {
+            if (x >= samples) {
+                break;
+            }
+
+            const float2 sampleOffset = (float2(float(x), float(y)) / resolution - float(samples) * 0.5f / resolution)
+                * scale / float(samples);
+            color += sampleChannel(sourceTexture, linearSampler, coord + sampleOffset);
+            weight += 1.0f;
+        }
+    }
+
+    return color / max(weight, 1.0f);
+}
+
+inline float3 shadertoyBloomMipAtlas(
+    texture2d<float, access::sample> baseTexture,
+    sampler linearSampler,
+    float2 uv,
+    constant FrameUniforms &uniforms
+) {
+    const float2 resolution = max(uniforms.resolution, float2(1.0f));
+    float3 color = float3(0.0f);
+    color += shadertoyBloomGrabMip(baseTexture, linearSampler, uv, 1.0f, float2(0.0f), 1, resolution);
+    color += shadertoyBloomGrabMip(baseTexture, linearSampler, uv, 2.0f, shadertoyBloomCalcOffset(1.0f, resolution), 4, resolution);
+    color += shadertoyBloomGrabMip(baseTexture, linearSampler, uv, 3.0f, shadertoyBloomCalcOffset(2.0f, resolution), 8, resolution);
+    color += shadertoyBloomGrabMip(baseTexture, linearSampler, uv, 4.0f, shadertoyBloomCalcOffset(3.0f, resolution), 16, resolution);
+    color += shadertoyBloomGrabMip(baseTexture, linearSampler, uv, 5.0f, shadertoyBloomCalcOffset(4.0f, resolution), 16, resolution);
+    color += shadertoyBloomGrabMip(baseTexture, linearSampler, uv, 6.0f, shadertoyBloomCalcOffset(5.0f, resolution), 16, resolution);
+    color += shadertoyBloomGrabMip(baseTexture, linearSampler, uv, 7.0f, shadertoyBloomCalcOffset(6.0f, resolution), 16, resolution);
+    color += shadertoyBloomGrabMip(baseTexture, linearSampler, uv, 8.0f, shadertoyBloomCalcOffset(7.0f, resolution), 16, resolution);
+    return color;
+}
+
+inline float4 shadertoyWxdfzjStatePixel(
+    texture2d<float, access::read> previousStateTexture,
+    float2 fragCoord,
+    constant FrameUniforms &uniforms
+) {
+    const float2 resolution = max(uniforms.resolution, float2(1.0f));
+    const int pxIndex = int(resolution.x) - int(fragCoord.x);
+
+    WxCameraState camera = wxCameraStateFromBuffer(previousStateTexture, uniforms);
+    float3 pos = camera.position;
+    float3 right = camera.right;
+    float3 up = camera.up;
+    float3 fwd = camera.forward;
+    float universeSign = camera.universeSign;
+
+    const float dt = clamp(uniforms.timeDelta, 0.0f, 0.08f);
+    if (uniforms.shadertoyMouse.z > 0.0f) {
+        const float4 lastMouse = wxReadStatePixel(previousStateTexture, resolution, 5);
+        float2 mouseDelta = uniforms.shadertoyMouse.xy - lastMouse.xy;
+        if (lastMouse.z < 0.0f || length(lastMouse.xy) < 0.001f) {
+            mouseDelta = float2(0.0f);
+        }
+
+        const float yaw = -mouseDelta.x * 0.003f;
+        const float pitch = mouseDelta.y * 0.003f;
+        fwd = normalize(wxRotateAroundAxis(fwd, up, yaw));
+        right = normalize(wxRotateAroundAxis(right, up, yaw));
+        fwd = normalize(wxRotateAroundAxis(fwd, right, pitch));
+        up = normalize(cross(right, fwd));
+        right = normalize(cross(fwd, up));
+    }
+
+    float roll = 0.0f;
+    if (wxInputKeyDown(uniforms.shadertoyKeyMask, 4)) {
+        roll -= 2.0f * dt;
+    }
+    if (wxInputKeyDown(uniforms.shadertoyKeyMask, 5)) {
+        roll += 2.0f * dt;
+    }
+    if (roll != 0.0f) {
+        right = normalize(wxRotateAroundAxis(right, fwd, roll));
+        up = normalize(cross(right, fwd));
+    }
+
+    float3 oldPos = pos;
+    float3 moveDir = float3(0.0f);
+    if (wxInputKeyDown(uniforms.shadertoyKeyMask, 0)) {
+        moveDir += fwd;
+    }
+    if (wxInputKeyDown(uniforms.shadertoyKeyMask, 2)) {
+        moveDir -= fwd;
+    }
+    if (wxInputKeyDown(uniforms.shadertoyKeyMask, 1)) {
+        moveDir -= right;
+    }
+    if (wxInputKeyDown(uniforms.shadertoyKeyMask, 3)) {
+        moveDir += right;
+    }
+    if (wxInputKeyDown(uniforms.shadertoyKeyMask, 6)) {
+        moveDir += up;
+    }
+    if (wxInputKeyDown(uniforms.shadertoyKeyMask, 7)) {
+        moveDir -= up;
+    }
+    if (dot(moveDir, moveDir) > 0.0f) {
+        pos += normalize(moveDir) * dt;
+    }
+
+    if (oldPos.y * pos.y < 0.0f) {
+        const float t = oldPos.y / max(oldPos.y - pos.y, 1e-8f);
+        const float3 crossPoint = mix(oldPos, pos, t);
+        if (length(crossPoint.xz) < abs(0.99f * 0.5f)) {
+            universeSign *= -1.0f;
+        }
+    }
+
+    if (pxIndex == 1) {
+        return float4(up, 1.0f);
+    }
+    if (pxIndex == 2) {
+        return float4(right, 1.0f);
+    }
+    if (pxIndex == 3) {
+        return float4(pos, 1.0f);
+    }
+    if (pxIndex == 4) {
+        return float4(fwd, 1.0f);
+    }
+    if (pxIndex == 5) {
+        return uniforms.shadertoyMouse;
+    }
+    if (pxIndex == 6) {
+        return float4(uniforms.time, universeSign, 0.0f, 1.0f);
+    }
+    return float4(0.0f);
+}
+
+inline float3 shadertoyBloomBlurAtlas(
+    texture2d<float, access::sample> sourceTexture,
+    sampler linearSampler,
+    float2 uv,
+    float2 axis,
+    constant FrameUniforms &uniforms
+) {
+    if (uv.x >= 0.52f) {
+        return float3(0.0f);
+    }
+
+    const float weights[5] = {
+        0.19638062f,
+        0.29675293f,
+        0.09442139f,
+        0.01037598f,
+        0.00025940f
+    };
+    const float offsets[5] = {
+        0.0f,
+        1.41176471f,
+        3.29411765f,
+        5.17647059f,
+        7.05882353f
+    };
+
+    const float2 resolution = max(uniforms.resolution, float2(1.0f));
+    float3 color = sampleChannel(sourceTexture, linearSampler, uv) * weights[0];
+    float weightSum = weights[0];
+
+    for (int i = 1; i < 5; i++) {
+        const float2 sampleOffset = (float2(offsets[i]) / resolution) * axis;
+        color += sampleChannel(sourceTexture, linearSampler, uv + sampleOffset) * weights[i];
+        color += sampleChannel(sourceTexture, linearSampler, uv - sampleOffset) * weights[i];
+        weightSum += weights[i] * 2.0f;
+    }
+
+    return color / max(weightSum, 1e-5f);
+}
+
+inline float3 shadertoyBloomGrabComposite(
+    texture2d<float, access::sample> bloomTexture,
+    sampler linearSampler,
+    float2 coord,
+    float octave,
+    float2 offset
+) {
+    coord /= exp2(octave);
+    coord -= offset;
+    return sampleChannel(bloomTexture, linearSampler, coord);
+}
+
+inline float3 shadertoyBloomComposite(
+    texture2d<float, access::sample> baseTexture,
+    texture2d<float, access::sample> bloomTexture,
+    sampler linearSampler,
+    float2 uv,
+    constant FrameUniforms &uniforms
+) {
+    const float2 resolution = max(uniforms.resolution, float2(1.0f));
+    float3 color = sampleChannel(baseTexture, linearSampler, uv);
+    float3 bloom = float3(0.0f);
+
+    bloom += shadertoyBloomGrabComposite(bloomTexture, linearSampler, uv, 1.0f, shadertoyBloomCalcOffset(0.0f, resolution)) * 1.0f;
+    bloom += shadertoyBloomGrabComposite(bloomTexture, linearSampler, uv, 2.0f, shadertoyBloomCalcOffset(1.0f, resolution)) * 1.5f;
+    bloom += shadertoyBloomGrabComposite(bloomTexture, linearSampler, uv, 3.0f, shadertoyBloomCalcOffset(2.0f, resolution)) * 1.0f;
+    bloom += shadertoyBloomGrabComposite(bloomTexture, linearSampler, uv, 4.0f, shadertoyBloomCalcOffset(3.0f, resolution)) * 1.5f;
+    bloom += shadertoyBloomGrabComposite(bloomTexture, linearSampler, uv, 5.0f, shadertoyBloomCalcOffset(4.0f, resolution)) * 1.8f;
+    bloom += shadertoyBloomGrabComposite(bloomTexture, linearSampler, uv, 6.0f, shadertoyBloomCalcOffset(5.0f, resolution)) * 1.0f;
+    bloom += shadertoyBloomGrabComposite(bloomTexture, linearSampler, uv, 7.0f, shadertoyBloomCalcOffset(6.0f, resolution)) * 1.0f;
+    bloom += shadertoyBloomGrabComposite(bloomTexture, linearSampler, uv, 8.0f, shadertoyBloomCalcOffset(7.0f, resolution)) * 1.0f;
+
+    color += bloom * 0.08f;
+    color = pow(max(color, float3(0.0f)), float3(1.5f));
+    color = color / (1.0f + color);
+    color = pow(max(color, float3(0.0f)), float3(1.0f / 1.5f));
+    color = color * color * (3.0f - 2.0f * color);
+    color = pow(max(color, float3(0.0f)), float3(1.3f, 1.20f, 1.0f));
+    color = saturate(color * 1.01f);
+    return pow(max(color, float3(0.0f)), float3(0.7f / 2.2f));
+}
+
 inline float3 renderFractal4D(float2 uv, constant FrameUniforms &uniforms, int maxIter) {
     const float scale = max(fabs(uniforms.scaleHi + uniforms.scaleLo), 0.08f);
     const float3 target = float3(
@@ -1896,6 +2990,74 @@ vertex VertexOut mandelbrotVertex(uint vertexID [[vertex_id]]) {
     out.position = float4(grid * 2.0f - 1.0f, 0.0f, 1.0f);
     out.uv = grid;
     return out;
+}
+
+fragment float4 shadertoyBlackHoleBaseFragment(
+    VertexOut in [[stage_in]],
+    texture2d<float, access::sample> historyTexture [[texture(0)]],
+    texture2d<float, access::read> stateTexture [[texture(1)]],
+    constant FrameUniforms &uniforms [[buffer(0)]]
+) {
+    constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+    const float2 resolution = max(uniforms.resolution, float2(1.0f));
+    const float2 pixel = in.uv * resolution;
+    const float2 uv = (2.0f * pixel - resolution) / resolution.y;
+
+    float3 currentColor;
+    if (uniforms.fractalType == 44) {
+        currentColor = renderShadertoyWxdfzjBase(uv, uniforms, wxCameraStateFromBuffer(stateTexture, uniforms));
+    } else {
+        currentColor = renderShadertoyW3BBzKBase(uv, uniforms);
+    }
+
+    const float3 previousColor = sampleChannel(historyTexture, linearSampler, in.uv);
+    const bool mouseActive = uniforms.shadertoyMouse.z > 0.0f;
+    const float blendWeight = uniforms.frameIndex < 2 || (uniforms.fractalType == 45 && mouseActive) ? 1.0f
+        : (uniforms.fractalType == 44 ? 0.5f : clamp(1.0f - pow(0.5f, uniforms.timeDelta / 0.08f), 0.08f, 0.65f));
+    return float4(mix(previousColor, currentColor, blendWeight), 1.0f);
+}
+
+fragment float4 shadertoyBloomMipFragment(
+    VertexOut in [[stage_in]],
+    texture2d<float, access::sample> baseTexture [[texture(0)]],
+    texture2d<float, access::read> previousStateTexture [[texture(1)]],
+    constant FrameUniforms &uniforms [[buffer(0)]]
+) {
+    constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+    const float2 fragCoord = in.uv * max(uniforms.resolution, float2(1.0f));
+    const bool isWxdfzjDataPixel = uniforms.fractalType == 44 && fragCoord.y < 1.0f && fragCoord.x > uniforms.resolution.x - 8.5f;
+    if (isWxdfzjDataPixel) {
+        return shadertoyWxdfzjStatePixel(previousStateTexture, fragCoord, uniforms);
+    }
+    return float4(shadertoyBloomMipAtlas(baseTexture, linearSampler, in.uv, uniforms), 1.0f);
+}
+
+fragment float4 shadertoyBloomBlurHFragment(
+    VertexOut in [[stage_in]],
+    texture2d<float, access::sample> sourceTexture [[texture(0)]],
+    constant FrameUniforms &uniforms [[buffer(0)]]
+) {
+    constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+    return float4(shadertoyBloomBlurAtlas(sourceTexture, linearSampler, in.uv, float2(0.5f, 0.0f), uniforms), 1.0f);
+}
+
+fragment float4 shadertoyBloomBlurVFragment(
+    VertexOut in [[stage_in]],
+    texture2d<float, access::sample> sourceTexture [[texture(0)]],
+    constant FrameUniforms &uniforms [[buffer(0)]]
+) {
+    constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+    return float4(shadertoyBloomBlurAtlas(sourceTexture, linearSampler, in.uv, float2(0.0f, 0.5f), uniforms), 1.0f);
+}
+
+fragment float4 shadertoyBlackHoleCompositeFragment(
+    VertexOut in [[stage_in]],
+    texture2d<float, access::sample> baseTexture [[texture(0)]],
+    texture2d<float, access::sample> bloomTexture [[texture(1)]],
+    constant FrameUniforms &uniforms [[buffer(0)]]
+) {
+    constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+    return float4(shadertoyBloomComposite(baseTexture, bloomTexture, linearSampler, in.uv, uniforms), 1.0f);
 }
 
 fragment float4 mandelbrotFragment(

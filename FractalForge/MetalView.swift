@@ -296,6 +296,7 @@ final class InteractiveMTKView: MTKView {
         isDragging = true
         dragMode = viewport?.isSpatial == true ? .rotateCamera : .pan
         lastDragLocation = convert(event.locationInWindow, from: nil)
+        updateShadertoyMouse(with: event, isDown: true)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -305,18 +306,22 @@ final class InteractiveMTKView: MTKView {
 
         let location = convert(event.locationInWindow, from: nil)
         let delta = screenPointInPixels(location) - screenPointInPixels(lastDragLocation)
-        switch dragMode {
-        case .none:
-            break
-        case .pan:
-            viewport.pan(screenDelta: delta, viewSize: viewSizeInPixels)
-        case .rotateCamera:
-            viewport.rotateCamera(screenDelta: delta, viewSize: viewSizeInPixels)
+        updateShadertoyMouse(with: event, isDown: true)
+        if !viewport.kind.usesShadertoyInput {
+            switch dragMode {
+            case .none:
+                break
+            case .pan:
+                viewport.pan(screenDelta: delta, viewSize: viewSizeInPixels)
+            case .rotateCamera:
+                viewport.rotateCamera(screenDelta: delta, viewSize: viewSizeInPixels)
+            }
         }
         lastDragLocation = location
     }
 
     override func mouseUp(with event: NSEvent) {
+        updateShadertoyMouse(with: event, isDown: false)
         isDragging = false
         dragMode = .none
         endInteractionSoon()
@@ -327,6 +332,7 @@ final class InteractiveMTKView: MTKView {
         isDragging = true
         dragMode = .pan
         lastDragLocation = convert(event.locationInWindow, from: nil)
+        updateShadertoyMouse(with: event, isDown: true)
     }
 
     override func rightMouseDragged(with event: NSEvent) {
@@ -337,7 +343,100 @@ final class InteractiveMTKView: MTKView {
         mouseUp(with: event)
     }
 
+    override func keyDown(with event: NSEvent) {
+        if let viewport, viewport.kind.usesShadertoyInput, setShadertoyKey(event, isDown: true) {
+            beginInteraction()
+            redrawOnce()
+            return
+        }
+
+        guard let viewport, viewport.kind.isBlackHole else {
+            super.keyDown(with: event)
+            return
+        }
+
+        let stepMultiplier = event.modifierFlags.contains(.shift) ? 3.0 : 1.0
+        let distanceStep = stepMultiplier * 1.25
+        let angleStep = stepMultiplier * 3.0
+        let pitchStep = stepMultiplier * 2.0
+
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "w":
+            viewport.cameraDistance = max(6, viewport.cameraDistance - distanceStep)
+        case "s":
+            viewport.cameraDistance = min(160, viewport.cameraDistance + distanceStep)
+        case "a":
+            viewport.rotationDegrees = viewport.wrappedCameraDegrees(viewport.rotationDegrees - angleStep)
+        case "d":
+            viewport.rotationDegrees = viewport.wrappedCameraDegrees(viewport.rotationDegrees + angleStep)
+        case "r":
+            viewport.cameraPitch = min(55, viewport.cameraPitch + pitchStep)
+        case "f":
+            viewport.cameraPitch = max(-55, viewport.cameraPitch - pitchStep)
+        case "q":
+            viewport.rotationDegrees = viewport.wrappedCameraDegrees(viewport.rotationDegrees - angleStep * 0.65)
+        case "e":
+            viewport.rotationDegrees = viewport.wrappedCameraDegrees(viewport.rotationDegrees + angleStep * 0.65)
+        default:
+            super.keyDown(with: event)
+            return
+        }
+
+        beginInteraction()
+        redrawOnce()
+        endInteractionSoon()
+    }
+
+    override func keyUp(with event: NSEvent) {
+        if let viewport, viewport.kind.usesShadertoyInput, setShadertoyKey(event, isDown: false) {
+            beginInteraction()
+            redrawOnce()
+            endInteractionSoon()
+            return
+        }
+
+        super.keyUp(with: event)
+    }
+
     override var mouseDownCanMoveWindow: Bool { false }
+
+    private func updateShadertoyMouse(with event: NSEvent, isDown: Bool) {
+        guard let viewport, viewport.kind.usesShadertoyInput else { return }
+
+        let location = convert(event.locationInWindow, from: nil)
+        let pixel = drawablePointInPixels(location)
+        let buttonState = isDown ? 1.0 : -1.0
+        viewport.shadertoyMouse = SIMD4(Double(pixel.x), Double(pixel.y), buttonState, buttonState)
+    }
+
+    @discardableResult
+    private func setShadertoyKey(_ event: NSEvent, isDown: Bool) -> Bool {
+        guard let viewport, let bit = shadertoyKeyBit(for: event) else {
+            return false
+        }
+
+        let mask = Int32(1 << bit)
+        if isDown {
+            viewport.shadertoyKeyMask |= mask
+        } else {
+            viewport.shadertoyKeyMask &= ~mask
+        }
+        return true
+    }
+
+    private func shadertoyKeyBit(for event: NSEvent) -> Int? {
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "w": return 0
+        case "a": return 1
+        case "s": return 2
+        case "d": return 3
+        case "q": return 4
+        case "e": return 5
+        case "r": return 6
+        case "f": return 7
+        default: return nil
+        }
+    }
 
     override func resetCursorRects() {
         discardCursorRects()
@@ -377,5 +476,14 @@ final class InteractiveMTKView: MTKView {
 
     private func screenPointInPixels(_ point: CGPoint) -> SIMD2<Float> {
         SIMD2(Float(point.x), Float(point.y)) * backingScale
+    }
+
+    private func drawablePointInPixels(_ point: CGPoint) -> SIMD2<Float> {
+        let width = max(Float(bounds.width), 1)
+        let height = max(Float(bounds.height), 1)
+        let x = max(0, min(Float(point.x) / width, 1))
+        let yPoint = isFlipped ? height - Float(point.y) : Float(point.y)
+        let y = max(0, min(yPoint / height, 1))
+        return SIMD2(x * Float(drawableSize.width), y * Float(drawableSize.height))
     }
 }
